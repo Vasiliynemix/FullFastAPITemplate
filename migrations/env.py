@@ -1,0 +1,69 @@
+"""
+Alembic env — async-режим.
+
+URL и target_metadata берём из приложения (единый источник правды). Миграции
+выполняются через async-движок и run_sync (Alembic внутри синхронный).
+"""
+
+from __future__ import annotations
+
+import asyncio
+from logging.config import fileConfig
+
+from alembic import context
+from sqlalchemy.ext.asyncio import async_engine_from_config
+from sqlalchemy.pool import NullPool
+
+from app.core.config import settings
+from app.models.base import Base
+
+# Импортируем модели, чтобы они зарегистрировались в metadata
+import app.models  # noqa: F401
+
+config = context.config
+if config.config_file_name is not None:
+    fileConfig(config.config_file_name)
+
+# Подставляем реальный URL из настроек приложения
+config.set_main_option("sqlalchemy.url", settings.database_url)
+
+target_metadata = Base.metadata
+
+
+def run_migrations_offline() -> None:
+    context.configure(
+        url=settings.database_url,
+        target_metadata=target_metadata,
+        literal_binds=True,
+        compare_type=True,
+    )
+    with context.begin_transaction():
+        context.run_migrations()
+
+
+def do_run_migrations(connection) -> None:  # noqa: ANN001
+    context.configure(
+        connection=connection,
+        target_metadata=target_metadata,
+        compare_type=True,
+        compare_server_default=True,
+    )
+    with context.begin_transaction():
+        context.run_migrations()
+
+
+async def run_migrations_online() -> None:
+    connectable = async_engine_from_config(
+        config.get_section(config.config_ini_section, {}),
+        prefix="sqlalchemy.",
+        poolclass=NullPool,  # для миграций пул не нужен
+    )
+    async with connectable.connect() as connection:
+        await connection.run_sync(do_run_migrations)
+    await connectable.dispose()
+
+
+if context.is_offline_mode():
+    run_migrations_offline()
+else:
+    asyncio.run(run_migrations_online())

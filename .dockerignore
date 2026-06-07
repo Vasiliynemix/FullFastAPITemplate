@@ -1,0 +1,58 @@
+# Контекст сборки backend-образа. Dockerfile копирует только:
+#   pyproject.toml, app/, migrations/, alembic.ini, gunicorn.conf.py,
+#   docker/backend/entrypoint.sh
+# Всё остальное в образ не нужно — режем, чтобы контекст был маленьким и быстрым.
+
+# --- VCS / ассистенты / CI ---
+.git
+.gitignore
+.dockerignore
+.github
+.claude
+.pre-commit-config.yaml
+
+# --- Python окружение / кеши ---
+.venv
+venv
+__pycache__
+*.py[cod]
+*.egg-info
+.eggs
+build
+dist
+.python-version
+.ruff_cache
+.pytest_cache
+.mypy_cache
+.benchmarks
+.coverage
+coverage.xml
+htmlcov
+
+# --- Секреты / локальное ---
+.env
+.env.*
+!.env.example
+*.local
+
+# --- Не нужно в рантайме образа ---
+tests
+docs
+loadtest
+README.md
+*.md
+Makefile
+docker-compose.yml
+docker-compose.prod.yml
+uv.lock
+
+# --- Логи / certbot тома ---
+logs
+docker/certbot/conf
+docker/certbot/www
+
+# --- IDE / ОС ---
+.idea
+.vscode
+.DS_Store
+*.swp

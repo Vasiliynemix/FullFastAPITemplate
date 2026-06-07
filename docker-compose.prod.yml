@@ -1,0 +1,175 @@
+# ============================================================
+# PROD-оверлей: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# Отличия от dev:
+# * backend через gunicorn (тюнингованные воркеры), без проброса кода и порта;
+# * горизонтальное масштабирование: deploy.replicas + nginx балансирует upstream;
+# * JSON-логи; certbot-контейнер с авто-renew; nginx с авто-reload.
+# ============================================================
+name: fastapi
+
+services:
+  backend:
+    command: ["gunicorn", "app.main:app", "-c", "gunicorn.conf.py"]
+    environment:
+      ENVIRONMENT: prod
+      DEBUG: "false"
+      # Воркеров на КОНТЕЙНЕР задаём ЯВНО (не полагаемся на cpu_count() — он видит
+      # ядра хоста, а не cgroup-лимит). Итог параллелизма: replicas × WEB_CONCURRENCY.
+      #   3 реплики × 3 воркера = 9 процессов всего.
+      # С PgBouncer ограничение по соединениям СНИМАЕТСЯ с PG: 9 воркеров × (20+10) = 270
+      # соединений идут в PgBouncer (MAX_CLIENT_CONN 1000), а PG видит только
+      # DEFAULT_POOL_SIZE (25). Поэтому воркеры/реплики можно растить свободно.
+      WEB_CONCURRENCY: "3"
+      # В проде ходим в БД ЧЕРЕЗ PgBouncer (пулер), а не напрямую в postgres.
+      # PgBouncer мультиплексирует сотни соединений приложения на ~25 реальных к PG,
+      # поэтому воркеры/реплики можно растить, не упираясь в max_connections.
+      POSTGRES_HOST: pgbouncer
+      POSTGRES_PORT: "6432"
+      DB_PGBOUNCER: "true"   # -> отключает prepared statements (нужно для transaction-режима)
+      # Сеть внутри docker фиксируем явно, чтобы прод-стек НЕ зависел от dev-правок .env
+      # (где, например, для запуска приложения на хосте стоит REDIS_HOST=localhost).
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      # Консоль человекочитаемо (как в dev); машинный JSON пишем в ФАЙЛ.
+      # Хотите JSON и в stdout — поставьте LOG_JSON: "true".
+      LOG_JSON: "false"
+      LOG_FILE_ENABLED: "true"
+      LOG_FILE_PATH: /app/logs/app.log
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+    # !override заменяет список volumes из базового compose целиком (а не добавляет):
+    # в проде НЕ монтируем исходники (./app, ./migrations) поверх образа — только логи.
+    # Каталог логов проброшен на хост -> доступен извне без `docker exec`.
+    volumes: !override
+      - ./logs:/app/logs
+    ports: !reset []
+    # Ротация stdout-потока (docker logs) как страховка — не растёт бесконечно
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    deploy:
+      mode: replicated
+      replicas: 3            # горизонтальное масштабирование инстансов (stateless)
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1G
+      restart_policy:
+        condition: on-failure
+        max_attempts: 3
+
+  # Воркер периодических задач в проде: тот же образ, env как у backend (pgbouncer,
+  # файловые логи), один экземпляр. Не масштабируется (задачи не дублируются).
+  worker:
+    environment:
+      ENVIRONMENT: prod
+      DEBUG: "false"
+      RUN_MIGRATIONS: "0"
+      POSTGRES_HOST: pgbouncer
+      POSTGRES_PORT: "6432"
+      DB_PGBOUNCER: "true"
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      LOG_JSON: "false"
+      LOG_FILE_ENABLED: "true"
+      LOG_FILE_PATH: /app/logs/app.log
+    volumes: !override
+      - ./logs:/app/logs
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  postgres:
+    ports: !reset []        # БД не торчит наружу в проде
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+  # PgBouncer — пул соединений перед PostgreSQL (transaction pooling).
+  # Приложение -> pgbouncer:6432 -> postgres:5432. PG видит только DEFAULT_POOL_SIZE
+  # реальных соединений, сколько бы воркеров/реплик ни было.
+  pgbouncer:
+    image: edoburu/pgbouncer:latest
+    environment:
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: ${POSTGRES_USER:-app}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-app}
+      DB_NAME: ${POSTGRES_DB:-app}
+      POOL_MODE: transaction
+      LISTEN_PORT: "6432"
+      MAX_CLIENT_CONN: "1000"   # сколько соединений принимаем от приложения
+      DEFAULT_POOL_SIZE: "25"   # реальных соединений к PG (на пару user+db)
+      MIN_POOL_SIZE: "5"
+      RESERVE_POOL_SIZE: "5"
+      AUTH_TYPE: scram-sha-256  # совпадает с дефолтом PostgreSQL
+      # asyncpg шлёт extra_float_digits как startup-параметр — разрешаем его pgbouncer'у
+      IGNORE_STARTUP_PARAMETERS: extra_float_digits
+      # Кому можно админ-консоль (SHOW POOLS/STATS) — для мониторинга (make pgbouncer-*)
+      ADMIN_USERS: ${POSTGRES_USER:-app}
+      STATS_USERS: ${POSTGRES_USER:-app}
+    healthcheck:
+      # pg_isready есть в образе; проверяем, что pgbouncer принимает соединения на 6432
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-p", "6432"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  redis:
+    ports: !reset []
+
+  nginx:
+    # ВАЖНО: переопределяя command, мы теряем штатный entrypoint nginx, который гоняет
+    # init-скрипты из /docker-entrypoint.d/ (подстановка SERVER_NAME + self-signed cert).
+    # Поэтому прогоняем их вручную, затем reload-loop (подхват обновлённых сертов) + nginx.
+    command:
+      - sh
+      - -c
+      - |
+        for f in /docker-entrypoint.d/*.sh; do [ -x "$$f" ] && "$$f"; done
+        (while :; do sleep 6h & wait $${!}; nginx -s reload; done) &
+        exec nginx -g 'daemon off;'
+
+  certbot:
+    image: certbot/certbot:latest
+    volumes:
+      - certbot_conf:/etc/letsencrypt
+      - certbot_www:/var/www/certbot
+    # Проверка/обновление сертификатов каждые 12 часов
+    entrypoint: >
+      sh -c "trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot; sleep 12h & wait $${!}; done"
+    depends_on:
+      - nginx
+    restart: unless-stopped
+
+# ============================================================
+# Тома prod: защита от случайного уничтожения данных.
+# external: true => compose НЕ управляет жизненным циклом тома и НИКОГДА его не
+# удаляет — даже при `docker compose down -v`. Это страховка от случайного сноса
+# боевой БД и Let's Encrypt-сертификатов (у LE есть строгие rate-limit на выпуск).
+#
+# Тома должны существовать заранее. На уже работающем проде они есть (созданы при
+# первом up). На НОВОМ сервере создайте их один раз: `make prod-init-volumes`.
+# Намеренно удалить данные можно только через защищённый `make prod-destroy`.
+# ============================================================
+volumes:
+  pgdata:
+    external: true
+    name: fastapi_pgdata
+  certbot_conf:
+    external: true
+    name: fastapi_certbot_conf

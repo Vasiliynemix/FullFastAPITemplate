@@ -1,0 +1,157 @@
+[project]
+name = "fastapi-template"
+version = "0.1.0"
+description = "Production-grade high-load FastAPI backend template"
+readme = "README.md"
+requires-python = ">=3.13"
+license = { text = "MIT" }
+authors = [{ name = "Backend Platform Team" }]
+
+dependencies = [
+    # --- Web / ASGI ---
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "gunicorn>=23.0.0",
+    "orjson>=3.10.0",            # быстрый JSON-сериализатор для hot paths
+    "uvloop>=0.21.0; sys_platform != 'win32'",  # ускоренный event loop
+    "httptools>=0.6.0",         # быстрый HTTP-парсер для uvicorn
+    "httpx>=0.28.0",            # async HTTP-клиент для интеграций с внешними API
+
+    # --- Validation / settings ---
+    "pydantic>=2.9.0",
+    "pydantic-settings>=2.6.0",
+    "email-validator>=2.2.0",   # нужен для pydantic EmailStr
+
+    # --- Database ---
+    "sqlalchemy[asyncio]>=2.0.36",
+    "asyncpg>=0.30.0",          # высокопроизводительный async-драйвер PostgreSQL
+    "alembic>=1.14.0",
+    "greenlet>=3.1.0",
+
+    # --- Cache / rate limit / pub-sub ---
+    "redis[hiredis]>=5.2.0",    # hiredis — C-парсер ответов Redis
+
+    # --- Logging ---
+    "structlog>=24.4.0",
+    "rich>=13.9.0",            # красивые traceback'и в dev-консоли (structlog)
+    "concurrent-log-handler>=0.9.25",  # ротация лог-файла, безопасная для multi-worker + gzip
+
+    # --- Auth ---
+    "pyjwt>=2.10.0",            # JWT access/refresh токены
+    "pwdlib[argon2]>=0.2.1",   # современное хеширование паролей (argon2)
+
+    # --- Scheduler ---
+    "croniter>=3.0.0",         # cron-выражения для периодических задач воркера
+
+    # --- Optional broker clients (abstraction слой) ---
+    "aiokafka>=0.12.0",
+    "aio-pika>=9.5.0",
+
+    # --- Observability ---
+    "sentry-sdk[fastapi]>=2.20.0",  # error tracking; включается только при SENTRY_DSN
+
+    # --- Object storage ---
+    "aioboto3>=13.2.0",         # async S3-клиент (импортируется лениво при STORAGE_TYPE=s3)
+    "python-multipart>=0.0.12",  # разбор multipart/form-data для UploadFile
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.8.0",
+    "mypy>=1.13.0",             # статическая проверка типов (make typecheck / CI)
+    "pre-commit>=4.0.0",        # git-хуки (make hooks)
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-cov>=6.0.0",
+    "pytest-benchmark>=5.1.0",  # перформанс-ориентированные тесты
+    "fakeredis>=2.26.0",        # in-memory Redis для тестов
+    "aiosqlite>=0.20.0",        # async SQLite для быстрых интеграционных тестов
+]
+
+[project.scripts]
+# CLI-обёртки для запуска приложения и обслуживания
+api = "app.cli:main"
+api-dev = "app.cli:dev"
+worker = "app.worker:main"   # отдельный процесс периодических задач
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+# ============================================================
+# Ruff: единый линтер + форматтер
+# ============================================================
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+src = ["app", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",   # pycodestyle
+    "F",        # pyflakes
+    "I",        # isort
+    "N",        # pep8-naming
+    "UP",       # pyupgrade
+    "B",        # flake8-bugbear
+    "C4",       # comprehensions
+    "ASYNC",    # flake8-async — ловит блокирующие вызовы в async
+    "SIM",      # flake8-simplify
+    "TID",      # tidy imports
+    "RUF",      # ruff-specific
+]
+ignore = [
+    "B008",     # FastAPI Depends() в дефолтах аргументов — это нормально
+    "N818",     # имена исключений без суффикса Error
+    # Комментарии на русском — осознанный выбор; RUF001-003 ловят «кириллицу-омоглифы»
+    "RUF001",   # ambiguous unicode в строках
+    "RUF002",   # ambiguous unicode в докстрингах
+    "RUF003",   # ambiguous unicode в комментариях
+    # PEP 695-дженерики (class Foo[T]) — капризны с Pydantic/dataclass; классический
+    # Generic[T] надёжнее и совместимее, оставляем его осознанно.
+    "UP046",    # Generic-класс через Generic[T] вместо type params
+    "UP047",    # Generic-функция без type params
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["N802", "N803"]
+"migrations/*" = ["E501", "F401"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+# ============================================================
+# Mypy — практичный (не строгий) статический анализ типов.
+# Проверяем app/; внешние либы без стабов игнорируем (ignore_missing_imports).
+# ============================================================
+[tool.mypy]
+python_version = "3.13"
+files = ["app"]
+ignore_missing_imports = true
+warn_redundant_casts = true
+# warn_unused_ignores выключен: часть `# type: ignore` нужна без стабов сторонних либ.
+warn_unused_ignores = false
+# Старт «без фанатизма»: не требуем аннотации на каждую функцию. Ужесточать
+# (disallow_untyped_defs, strict) — по мере готовности кодовой базы.
+
+# ============================================================
+# Pytest
+# ============================================================
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+markers = [
+    "perf: performance-oriented tests",
+]
+
+[tool.coverage.run]
+source = ["app"]
+omit = ["app/cli.py", "migrations/*"]
