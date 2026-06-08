@@ -52,8 +52,8 @@ HTTPS ──────────►│  reverse proxy → upstream keepalive
 
 - **API route** (`app/api`) — парсинг входа, вызов сервиса, оборачивание в единый ответ. **Никакой бизнес-логики.**
 - **Service** (`app/services`) — бизнес-логика. Наружу бросает **только** `ServerException`.
-- **Repository** (`app/repositories`) — **только** доступ к данным (ORM + raw SQL в hot paths).
-- **Unit of Work** (`app/db/uow.py`) — одна транзакция/сессия на бизнес-операцию.
+- **Repository** (`app/repositories`) — **только** доступ к данным (ORM + raw SQL в hot paths). Геттеры умеют `for_update` (блокировки) и `options=[selectinload(...)]` (eager-load связей — обязателен в async, см. ниже).
+- **Unit of Work** (`app/db/uow.py`) — одна транзакция/сессия на бизнес-операцию. Не синглтон: **новый UoW на каждую транзакцию** (per-request), репозитории создаются лениво и кэшируются на сессию (`uow.users` или `uow.repo(AnyRepo)`). См. [ADR-0008](docs/adr/0008-unit-of-work-lifecycle.md).
 - **Cache** (`app/cache`) / **Broker** (`app/broker`) / **Storage** (`app/storage`) — абстракции, сервис не знает о Redis/Kafka/S3.
 - **Outbox** (`app/outbox`, `app/models/outbox.py`) — событие пишется в БД в одной транзакции с данными; релей в воркере публикует его в брокер (at-least-once). См. [ADR-0002](docs/adr/0002-transactional-outbox.md).
 - **HTTP-клиенты** (`app/clients`) — базовый класс для интеграций с внешними API (см. ниже).
@@ -398,6 +398,33 @@ async with uow:
 
 ---
 
+## 🔗 Связи и eager-load
+
+В async **ленивая загрузка relationship запрещена**: обращение к связи вне сессии падает
+с `MissingGreenlet`/`DetachedInstanceError`. Поэтому всё, что сериализуешь, грузи заранее —
+геттеры репозитория принимают `options=`:
+
+```python
+acc = await uow.accounts.get(acc_id, options=[selectinload(Account.transactions)])
+# вложенно («транзакции юзера»): профиль + счета + их транзакции одним набором запросов
+user = await uow.users.get_overview(user_id)   # selectinload(User.accounts).selectinload(...)
+```
+
+Демо-домен **`accounts`** показывает все типы связей и eager-load в ответе API:
+
+| Связь | Где |
+|---|---|
+| one-to-one | `User ↔ Profile` |
+| one-to-many | `User → Accounts`, `Account → Transactions` |
+| many-to-one | `Account → User`, `Transaction → Account` |
+| many-to-many | `Transaction ↔ Category` (assoc-таблица) |
+
+Ручки: `GET /accounts/{id}` (счёт + транзакции + категории), `GET /accounts/overview/{user_id}`
+(профиль + счета + вложенные транзакции), `POST /accounts/{id}/deposit|withdraw` (под `for_update`).
+Подробнее — [ADR-0007](docs/adr/0007-eager-loading.md).
+
+---
+
 ## ⏰ Фоновые задачи (worker)
 
 Периодические задачи (опрос внешнего сервиса, обслуживание, рассылки по расписанию)
@@ -621,7 +648,8 @@ make cov           # покрытие
 ```
 
 Покрыты: репозитории, сервисы, auth (JWT/сессии/**куки**), **блокировки** (`for_update`
-SQL + оптимистичная `version_id`), декораторы, HTTP-клиент, брокер и консьюмеры,
+SQL + оптимистичная `version_id`), **связи + eager-load** (все 4 типа, accounts-домен),
+**ленивый UoW** (кэш/реентерабельность), декораторы, HTTP-клиент, брокер и консьюмеры,
 **outbox** (релей + at-least-once), **storage** (S3 + роутер /files), docs Basic Auth,
 сериализация. БД — async SQLite, Redis — fakeredis, брокер — in-memory.
 
@@ -651,10 +679,10 @@ app/
   core/           config, logging (structlog), lifespan, context
   schemas/        единый response-контракт + DTO
   exceptions/     ServerException + глобальные хендлеры
-  models/         ORM-модели (SQLAlchemy 2.x)
-  db/             async engine/session (пул), Unit of Work
-  repositories/   Repository Pattern (ORM + raw SQL)
-  services/       бизнес-логика
+  models/         ORM-модели (User/Outbox + демо связей: Account/Transaction/Category/Profile)
+  db/             async engine/session (пул), ленивый Unit of Work
+  repositories/   Repository Pattern (ORM + raw SQL, for_update, eager-load options)
+  services/       бизнес-логика (в т.ч. account: deposit/withdraw под FOR UPDATE)
   cache/          абстракция + Redis-реализация
   broker/         абстракция + memory/kafka/rabbitmq
   outbox/         transactional outbox: релей БД -> брокер (at-least-once)

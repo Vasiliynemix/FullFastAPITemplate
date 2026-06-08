@@ -24,3 +24,5 @@
 - [0004](0004-optional-components.md) — брокер и S3-хранилище за флагами (опциональные компоненты)
 - [0005](0005-concurrency-control.md) — защита от гонок: `for_update` + `VersionedMixin`
 - [0006](0006-auth-token-transport.md) — транспорт токена: header XOR cookie
+- [0007](0007-eager-loading.md) — eager-load relationship через `options` (async-требование)
+- [0008](0008-unit-of-work-lifecycle.md) — UnitOfWork: ленивый, один на транзакцию
