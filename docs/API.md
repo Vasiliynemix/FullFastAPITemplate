@@ -97,6 +97,14 @@ Authorization: Bearer <access_token>
 Немедленный отзыв access после logout/удаления — опционально через `AUTH_VALIDATE_SESSION=true`
 (каждый запрос сверяет сессию с Redis). По умолчанию access stateless (живёт до истечения).
 
+**Транспорт токена** (`AUTH_TOKEN_TRANSPORT`, по умолчанию `header`) — что-то ОДНО:
+- `header` — токен в `Authorization: Bearer` (SPA/mobile);
+- `cookie` — `login`/`refresh` ставят HttpOnly-куки `access_token`/`refresh_token`,
+  авторизация читает токен из куки, `logout` их чистит (браузерная сессия на одном домене).
+
+Cookie работает только при `AUTH_JWT_ENABLED=true` и **несовместим** с глобальным ключом
+(валидатор роняет старт). Тело ответа `login`/`refresh` в обоих режимах содержит токены.
+
 ---
 
 ## Эндпоинты
@@ -173,6 +181,47 @@ Authorization: Bearer <access_token>
 
 `UserRead`: `{ "id", "email", "full_name", "is_active", "role" }`.
 
+### Accounts (демо связей + блокировки)
+
+Демонстрационный домен: ВСЕ типы relationship (one-to-one / one-to-many / many-to-one /
+many-to-many) с eager-load в ответе + операции с балансом под пессимистичной блокировкой
+`SELECT ... FOR UPDATE`. Баланс и суммы — целые **минорные единицы** (копейки).
+
+| Метод | Путь | Auth | Описание |
+|------|------|------|----------|
+| POST | `/api/v1/accounts` | — | создать счёт: `{ "user_id", "name" }` → `201`, `AccountRead` |
+| GET | `/api/v1/accounts/{id}` | — | счёт + транзакции + категории каждой (eager-load) |
+| GET | `/api/v1/accounts/overview/{user_id}` | — | юзер: профиль (1-1) + счета (1-many) + вложенные транзакции |
+| POST | `/api/v1/accounts/{id}/deposit` | — | пополнить: `{ "amount" (>0), "category_ids"? }` |
+| POST | `/api/v1/accounts/{id}/withdraw` | — | списать: `{ "amount" (>0) }` |
+
+- `deposit`/`withdraw` берут строку счёта `FOR UPDATE` — параллельные операции не теряют
+  изменения (нет lost update).
+- `withdraw` при нехватке средств → `409 conflict`.
+- `deposit.category_ids` привязывает существующие категории к транзакции (many-to-many).
+
+### Notifications
+
+> Доступна только при `BROKER_ENABLED=true`.
+
+| Метод | Путь | Auth | Описание |
+|------|------|------|----------|
+| POST | `/api/v1/notifications` | — | поставить уведомление в очередь брокера → `202` |
+
+body: `{ "recipient_phone": "+1...", "text": "...", "markdown"? }`. Публикуется как
+типизированное событие; доставку выполняет консьюмер (фоном, вне request lifecycle).
+
+### Files (объектное хранилище)
+
+> Доступны только при `STORAGE_ENABLED=true` (S3-совместимое хранилище: AWS S3/MinIO/Yandex).
+
+| Метод | Путь | Auth | Описание |
+|------|------|------|----------|
+| POST | `/api/v1/files` | — | загрузка (multipart-поле `file`) → `{ key, url, size, content_type }` |
+| GET | `/api/v1/files/url/{key}` | — | presigned-ссылка на ПРЯМОЕ скачивание из S3 |
+| GET | `/api/v1/files/download/{key}` | — | потоковое скачивание через бэкенд |
+| DELETE | `/api/v1/files/{key}` | — | удалить объект |
+
 ---
 
 ## Пагинация
@@ -194,8 +243,9 @@ curl -s .../api/v1/users/stream/all | jq -c .
 
 ## Rate limiting
 
-Лимит по IP (Redis, fixed window), **многоярусный** — запрос блокируется при превышении
-любого яруса:
+Лимит по клиенту (Redis, fixed window), **многоярусный** — запрос блокируется при превышении
+любого яруса. Идентификатор клиента: по умолчанию **IP** (за nginx — первый `X-Forwarded-For`);
+при включённом глобальном ключе — **по ключу** (квота на продукт, а не на IP):
 - **длинное окно** — `RATE_LIMIT_REQUESTS` запросов за `RATE_LIMIT_WINDOW` секунд (квота);
 - **burst-ярус** — `RATE_LIMIT_BURST` запросов за `RATE_LIMIT_BURST_WINDOW` секунд против
   всплесков (`0` = выключен). Пример: `1000/60с` + `20/1с` — минутная квота, но не более
