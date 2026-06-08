@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from app.api.v1 import auth, files, health, notifications, users
+from app.api.v1 import accounts, auth, files, health, notifications, users
 from app.core.config import settings
 
 
@@ -23,6 +23,7 @@ def build_api_router() -> APIRouter:
         router.include_router(auth.router, prefix="/auth", tags=["auth"])
 
     router.include_router(users.router, prefix="/users", tags=["users"])
+    router.include_router(accounts.router, prefix="/accounts", tags=["accounts"])
 
     # /notifications работает через брокер — без него ручку не подключаем.
     if settings.broker_enabled:

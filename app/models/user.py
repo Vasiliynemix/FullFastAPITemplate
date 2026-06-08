@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
-from sqlalchemy import String
-from sqlalchemy.orm import Mapped, mapped_column
+from typing import TYPE_CHECKING
 
-from app.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
+from sqlalchemy import String
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin, VersionedMixin
 from app.security.roles import DEFAULT_ROLE, Role
 
+if TYPE_CHECKING:
+    from app.models.account import Account
+    from app.models.profile import Profile
 
-class User(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+
+class User(UUIDPrimaryKeyMixin, TimestampMixin, VersionedMixin, Base):
     __tablename__ = "users"
 
     # index=True на email — ускоряет частые выборки/логин по email (hot path)
@@ -23,3 +29,12 @@ class User(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     # Роль хранится как строка из enum Role. Менять набор ролей — в app/security/roles.py
     role: Mapped[Role] = mapped_column(String(32), default=DEFAULT_ROLE, nullable=False)
+
+    # one-to-one: у юзера один профиль (uselist=False)
+    profile: Mapped[Profile | None] = relationship(
+        back_populates="user", uselist=False, cascade="all, delete-orphan"
+    )
+    # one-to-many: у юзера много счетов
+    accounts: Mapped[list[Account]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )

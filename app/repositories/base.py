@@ -8,6 +8,21 @@ Generic по модели. Для hot paths предусмотрены:
 * stream() — серверный курсор (yield по строкам), не тянет всё в память.
 * выборки используют ORM, но репозиторий — место, где допустим raw SQL
   (см. UserRepository.search_raw как пример).
+
+Eager-load relationship: геттеры принимают `options=[selectinload(Model.rel), ...]`.
+В async ленивая загрузка связи НЕВОЗМОЖНА (падает с MissingGreenlet при доступе к
+атрибуту вне сессии), поэтому всё, что будешь сериализовать/использовать, грузи заранее.
+Примеры — AccountRepository / app/services/account.py (в т.ч. вложенный selectinload).
+
+Защита от гонок (lost update в read-modify-write): геттеры принимают `for_update=True`
+(`SELECT ... FOR UPDATE`) — пессимистичная блокировка строки до конца транзакции.
+Использовать ТОЛЬКО внутри `async with uow` и НЕ держать лок во время медленного I/O.
+Доп. опции: `skip_locked` (пропустить занятые — для очередей), `nowait` (сразу падать,
+если занято). Пример:
+    async with uow:
+        acc = await uow.accounts.get(acc_id, for_update=True)  # строка заблокирована
+        acc.balance -= 10                                       # конкуренты ждут commit
+        await uow.commit()
 """
 
 from __future__ import annotations
@@ -30,12 +45,47 @@ class BaseRepository(Generic[ModelT]):
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def get(self, entity_id: uuid.UUID) -> ModelT | None:
-        # session.get использует identity map — дешёвый primary-key lookup
-        return await self.session.get(self.model, entity_id)
+    @staticmethod
+    def _lock(stmt: Any, *, for_update: bool, nowait: bool, skip_locked: bool) -> Any:
+        # Навешивает SELECT ... FOR UPDATE [NOWAIT | SKIP LOCKED] на выборку.
+        # На SQLite (тесты) диалект молча игнорирует — ошибки не будет.
+        if for_update:
+            stmt = stmt.with_for_update(nowait=nowait, skip_locked=skip_locked)
+        return stmt
 
-    async def get_by(self, **filters: Any) -> ModelT | None:
+    async def get(
+        self,
+        entity_id: uuid.UUID,
+        *,
+        for_update: bool = False,
+        nowait: bool = False,
+        skip_locked: bool = False,
+        options: Sequence[Any] | None = None,
+    ) -> ModelT | None:
+        # options — loader-опции (selectinload/joinedload/...) для eager-загрузки relationship.
+        # В async ленивая загрузка падает с MissingGreenlet, поэтому связи грузим заранее.
+        if not for_update and not options:
+            # session.get использует identity map — дешёвый primary-key lookup
+            return await self.session.get(self.model, entity_id)
+        stmt = select(self.model).where(self.model.id == entity_id)  # type: ignore[attr-defined]
+        if options:
+            stmt = stmt.options(*options)
+        stmt = self._lock(stmt, for_update=for_update, nowait=nowait, skip_locked=skip_locked)
+        return (await self.session.execute(stmt)).scalar_one_or_none()
+
+    async def get_by(
+        self,
+        *,
+        for_update: bool = False,
+        nowait: bool = False,
+        skip_locked: bool = False,
+        options: Sequence[Any] | None = None,
+        **filters: Any,
+    ) -> ModelT | None:
         stmt = select(self.model).filter_by(**filters).limit(1)
+        if options:
+            stmt = stmt.options(*options)
+        stmt = self._lock(stmt, for_update=for_update, nowait=nowait, skip_locked=skip_locked)
         return (await self.session.execute(stmt)).scalar_one_or_none()
 
     async def list(
@@ -44,10 +94,17 @@ class BaseRepository(Generic[ModelT]):
         limit: int = 50,
         offset: int = 0,
         order_by: Any | None = None,
+        for_update: bool = False,
+        skip_locked: bool = False,
+        options: Sequence[Any] | None = None,
     ) -> Sequence[ModelT]:
         stmt = select(self.model).limit(limit).offset(offset)
         if order_by is not None:
             stmt = stmt.order_by(order_by)
+        if options:
+            stmt = stmt.options(*options)
+        # for_update на списке + skip_locked — типовой паттерн «забрать пачку из очереди»
+        stmt = self._lock(stmt, for_update=for_update, nowait=False, skip_locked=skip_locked)
         return (await self.session.execute(stmt)).scalars().all()
 
     async def count(self, **filters: Any) -> int:

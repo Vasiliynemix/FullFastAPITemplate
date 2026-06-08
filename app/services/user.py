@@ -17,6 +17,8 @@ import uuid
 from collections.abc import AsyncIterator, Sequence
 from typing import ClassVar
 
+from sqlalchemy.orm.exc import StaleDataError
+
 from app.broker.events import Event
 from app.cache.base import AbstractCache
 from app.db.uow import UnitOfWork
@@ -100,7 +102,12 @@ class UserService:
                 raise NotFoundError("User not found")
             for field, value in values.items():
                 setattr(user, field, value)
-            await self.uow.commit()
+            try:
+                # Оптимистичная блокировка (VersionedMixin): если строку успел изменить
+                # кто-то ещё, ORM кинет StaleDataError -> отдаём 409, клиент перечитает и повторит.
+                await self.uow.commit()
+            except StaleDataError as exc:
+                raise ConflictError("User was modified concurrently, refresh and retry") from exc
             dto = UserRead.model_validate(user)
 
         await self.cache.delete(self._key(user_id))  # инвалидация

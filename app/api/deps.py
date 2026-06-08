@@ -17,7 +17,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Annotated
 
-from fastapi import Depends, Header
+from fastapi import Depends, Header, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.broker.base import AbstractBroker
@@ -30,9 +30,11 @@ from app.core.config import settings
 from app.db.session import get_sessionmaker
 from app.db.uow import UnitOfWork
 from app.exceptions.base import ForbiddenError, UnauthorizedError
+from app.security.cookies import ACCESS_COOKIE
 from app.security.jwt import TokenError, TokenType, decode_token
 from app.security.roles import Role, role_at_least
 from app.security.session_store import SessionStore, get_session_store
+from app.services.account import AccountService
 from app.services.auth import AuthService
 from app.services.notification import NotificationService
 from app.services.user import UserService
@@ -90,6 +92,10 @@ def get_auth_service(
     return AuthService(uow=uow, sessions=sessions)
 
 
+def get_account_service(uow: Annotated[UnitOfWork, Depends(get_uow)]) -> AccountService:
+    return AccountService(uow=uow)
+
+
 def get_notification_service(
     messages: Annotated[MessagesClient, Depends(get_messages_client)],
 ) -> NotificationService:
@@ -115,6 +121,7 @@ _ANONYMOUS = CurrentUser(id=uuid.UUID(int=0), role=Role.SERVICE, sid=None)
 
 
 async def get_current_user(
+    request: Request,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
     sessions: Annotated[SessionStore, Depends(get_sessions)],
 ) -> CurrentUser:
@@ -123,10 +130,15 @@ async def get_current_user(
     if not settings.auth_jwt_enabled:
         return _ANONYMOUS
 
-    if credentials is None or not credentials.credentials:
-        raise UnauthorizedError("Missing bearer token")
+    # Транспорт токена — ЧТО-ТО ОДНО (см. AUTH_TOKEN_TRANSPORT): либо кука, либо заголовок.
+    if settings.cookie_auth:
+        token = request.cookies.get(ACCESS_COOKIE)
+    else:
+        token = credentials.credentials if credentials else None
+    if not token:
+        raise UnauthorizedError("Missing access token")
     try:
-        payload = decode_token(credentials.credentials, expected_type=TokenType.ACCESS)
+        payload = decode_token(token, expected_type=TokenType.ACCESS)
     except TokenError as exc:
         raise UnauthorizedError(str(exc)) from exc
 
@@ -184,6 +196,7 @@ def require_at_least(minimum: Role):
 # ---------------------------------------------------------------------------
 UserServiceDep = Annotated[UserService, Depends(get_user_service)]
 AuthServiceDep = Annotated[AuthService, Depends(get_auth_service)]
+AccountServiceDep = Annotated[AccountService, Depends(get_account_service)]
 NotificationServiceDep = Annotated[NotificationService, Depends(get_notification_service)]
 BrokerDep = Annotated[AbstractBroker, Depends(get_message_broker)]
 EventBusDep = Annotated[EventBus, Depends(get_event_bus)]

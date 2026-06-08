@@ -14,11 +14,10 @@ from alembic import context
 from sqlalchemy.ext.asyncio import async_engine_from_config
 from sqlalchemy.pool import NullPool
 
+# Импортируем модели, чтобы они зарегистрировались в metadata
+import app.models
 from app.core.config import settings
 from app.models.base import Base
-
-# Импортируем модели, чтобы они зарегистрировались в metadata
-import app.models  # noqa: F401
 
 config = context.config
 if config.config_file_name is not None:
@@ -41,7 +40,7 @@ def run_migrations_offline() -> None:
         context.run_migrations()
 
 
-def do_run_migrations(connection) -> None:  # noqa: ANN001
+def do_run_migrations(connection) -> None:
     context.configure(
         connection=connection,
         target_metadata=target_metadata,

@@ -32,6 +32,13 @@ class BrokerType(StrEnum):
     RABBITMQ = "rabbitmq"
 
 
+class AuthTransport(StrEnum):
+    """Где живёт токен в авторизации — что-то ОДНО (не оба сразу)."""
+
+    HEADER = "header"  # Authorization: Bearer (SPA/mobile; иммунен к CSRF)
+    COOKIE = "cookie"  # HttpOnly-кука (браузерная сессия; иммунна к XSS-краже токена)
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=_PROJECT_ROOT / ".env",
@@ -151,6 +158,12 @@ class Settings(BaseSettings):
     # Даёт НЕМЕДЛЕННУЮ инвалидацию access после logout/удаления (ценой обращения к Redis).
     # Если false (по умолчанию) — access stateless, отзыв действует после его истечения.
     auth_validate_session: bool = False
+    # Транспорт токена в авторизации — ОДНО из: header (Bearer) ИЛИ cookie (HttpOnly).
+    # Работает только при включённом JWT; cookie несовместим с глобальным ключом
+    # (браузеру негде хранить секрет) — см. валидатор ниже.
+    auth_token_transport: AuthTransport = AuthTransport.HEADER
+    auth_cookie_secure: bool = True  # Secure-флаг (только HTTPS). В локальном http-dev = false.
+    auth_cookie_samesite: str = "lax"  # lax | strict | none (none требует secure=true)
 
     # --- Global API key gate ---
     # Если включено — ВЕСЬ API (кроме health/docs) требует заголовок X-API-Key.
@@ -183,7 +196,23 @@ class Settings(BaseSettings):
                 "AUTH_JWT_ENABLED=false требует GLOBAL_API_KEY_ENABLED=true "
                 "(нельзя оставить сервис без авторизации совсем)"
             )
+        # Cookie-транспорт осмыслен только при JWT и несовместим с глобальным ключом
+        # (браузеру негде безопасно хранить секретный ключ). Падаем явно, а не молча.
+        if self.auth_token_transport is AuthTransport.COOKIE:
+            if not self.auth_jwt_enabled:
+                raise ValueError("AUTH_TOKEN_TRANSPORT=cookie требует AUTH_JWT_ENABLED=true")
+            if self.global_api_key_enabled:
+                raise ValueError(
+                    "AUTH_TOKEN_TRANSPORT=cookie несовместим с GLOBAL_API_KEY_ENABLED=true: "
+                    "браузеру негде хранить секретный ключ. Используйте header-транспорт "
+                    "или выключите глобальный ключ."
+                )
         return self
+
+    @property
+    def cookie_auth(self) -> bool:
+        """Активен ли cookie-транспорт токена (а не header)."""
+        return self.auth_token_transport is AuthTransport.COOKIE
 
     # ------------------------------------------------------------------
     # Производные значения

@@ -22,3 +22,5 @@
 - [0002](0002-transactional-outbox.md) — transactional outbox для надёжной доставки событий
 - [0003](0003-argon2-offloading.md) — argon2 в пуле потоков и вне транзакции БД
 - [0004](0004-optional-components.md) — брокер и S3-хранилище за флагами (опциональные компоненты)
+- [0005](0005-concurrency-control.md) — защита от гонок: `for_update` + `VersionedMixin`
+- [0006](0006-auth-token-transport.md) — транспорт токена: header XOR cookie

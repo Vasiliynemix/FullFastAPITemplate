@@ -8,9 +8,11 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Request, status
+from fastapi import APIRouter, Request, Response, status
 
 from app.api.deps import AuthServiceDep, CurrentUserDep
+from app.core.config import settings
+from app.exceptions.base import UnauthorizedError
 from app.schemas.auth import (
     LoginRequest,
     RefreshRequest,
@@ -20,6 +22,7 @@ from app.schemas.auth import (
 )
 from app.schemas.response import SuccessResponse, success
 from app.schemas.user import UserRead
+from app.security.cookies import REFRESH_COOKIE, clear_auth_cookies, set_auth_cookies
 
 router = APIRouter()
 
@@ -46,30 +49,52 @@ async def login(
     data: LoginRequest,
     service: AuthServiceDep,
     request: Request,
+    response: Response,
 ) -> SuccessResponse[TokenPair]:
     # Захватываем IP и User-Agent для метаданных сессии
     pair = await service.login(
         data, ip=_client_ip(request), user_agent=request.headers.get("user-agent")
     )
+    # В cookie-режиме кладём токены в HttpOnly-куки. В теле они есть в любом режиме —
+    # их видит вызвавший login (для header-режима это и есть способ их получить).
+    if settings.cookie_auth:
+        set_auth_cookies(response, pair)
     return success(pair)
 
 
 @router.post("/refresh", response_model=SuccessResponse[TokenPair])
-async def refresh(data: RefreshRequest, service: AuthServiceDep) -> SuccessResponse[TokenPair]:
-    return success(await service.refresh(data.refresh_token))
+async def refresh(
+    data: RefreshRequest, service: AuthServiceDep, request: Request, response: Response
+) -> SuccessResponse[TokenPair]:
+    # Источник refresh-токена соответствует режиму: cookie -> из куки, header -> из тела
+    token = request.cookies.get(REFRESH_COOKIE) if settings.cookie_auth else data.refresh_token
+    if not token:
+        raise UnauthorizedError("Missing refresh token")
+    pair = await service.refresh(token)
+    if settings.cookie_auth:
+        set_auth_cookies(response, pair)  # ротация: новые токены -> новые куки
+    return success(pair)
 
 
 @router.post("/logout", response_model=SuccessResponse[dict])
-async def logout(service: AuthServiceDep, current: CurrentUserDep) -> SuccessResponse[dict]:
+async def logout(
+    service: AuthServiceDep, current: CurrentUserDep, response: Response
+) -> SuccessResponse[dict]:
     """Выйти из ТЕКУЩЕЙ сессии. Нужен только access-токен (sid внутри него)."""
     revoked = await service.logout_current(current.sid)
+    if settings.cookie_auth:
+        clear_auth_cookies(response)
     return success({"revoked": revoked})
 
 
 @router.post("/logout/all", response_model=SuccessResponse[dict])
-async def logout_all(service: AuthServiceDep, current: CurrentUserDep) -> SuccessResponse[dict]:
+async def logout_all(
+    service: AuthServiceDep, current: CurrentUserDep, response: Response
+) -> SuccessResponse[dict]:
     """Выйти из ВСЕХ сессий пользователя (на всех устройствах)."""
     revoked = await service.logout_all(str(current.id))
+    if settings.cookie_auth:
+        clear_auth_cookies(response)  # чистим куки текущего браузера
     return success({"revoked": revoked})
 
 

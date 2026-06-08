@@ -22,7 +22,8 @@ class LoginRequest(BaseModel):
 
 
 class RefreshRequest(BaseModel):
-    refresh_token: str
+    # Опционально: если включены auth-куки, токен берётся из refresh-куки (тело можно пустым)
+    refresh_token: str | None = None
 
 
 class TokenPair(BaseModel):

@@ -47,6 +47,10 @@ _DESCRIPTION_TAIL = """
 _TAG_HEALTH = {"name": "health", "description": "Liveness/readiness пробы. Без авторизации."}
 _TAG_AUTH = {"name": "auth", "description": "Регистрация, вход, JWT-токены, сессии."}
 _TAG_USERS = {"name": "users", "description": "CRUD пользователей, пагинация, NDJSON-стриминг."}
+_TAG_ACCOUNTS = {
+    "name": "accounts",
+    "description": "Демо связей (1-1/1-many/many-1/many-many) + eager-load + FOR UPDATE.",
+}
 _TAG_NOTIFICATIONS = {
     "name": "notifications",
     "description": "Постановка уведомлений в очередь (брокер).",
@@ -92,6 +96,7 @@ def build_tags() -> list[dict[str, str]]:
     if settings.auth_jwt_enabled:
         tags.append(_TAG_AUTH)
     tags.append(_TAG_USERS)
+    tags.append(_TAG_ACCOUNTS)
     if settings.broker_enabled:
         tags.append(_TAG_NOTIFICATIONS)
     if settings.storage_enabled:

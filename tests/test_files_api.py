@@ -14,10 +14,11 @@ def _app(fake_storage, monkeypatch):
     from app.api.deps import get_storage
     from app.main import create_app
 
-    # Включаем storage (иначе /files не регистрируется), без Redis (rate limit),
-    # хранилище подменяем на in-memory
+    # Включаем storage (иначе /files не регистрируется), без Redis (rate limit) и без
+    # глобального gate (иначе /files требует X-API-Key) — изолируем от значений .env.
     monkeypatch.setattr(settings, "storage_enabled", True)
     monkeypatch.setattr(settings, "rate_limit_enabled", False)
+    monkeypatch.setattr(settings, "global_api_key_enabled", False)
     app = create_app()
     app.dependency_overrides[get_storage] = lambda: fake_storage
     return app
@@ -69,6 +70,7 @@ async def test_files_router_absent_when_storage_disabled(monkeypatch):
 
     monkeypatch.setattr(settings, "storage_enabled", False)
     monkeypatch.setattr(settings, "rate_limit_enabled", False)
+    monkeypatch.setattr(settings, "global_api_key_enabled", False)
     async with _client(create_app()) as c:
         r = await c.post("/api/v1/files", files={"file": ("a.txt", b"x", "text/plain")})
         assert r.status_code == 404
