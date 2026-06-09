@@ -1,5 +1,5 @@
 [project]
-name = "fastapi-template"
+name = "full-fastapi-template"
 version = "0.1.0"
 description = "Production-grade high-load FastAPI backend template"
 readme = "README.md"

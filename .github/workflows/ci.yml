@@ -58,6 +58,6 @@ jobs:
           context: .
           file: docker/backend/Dockerfile
           push: false           # шаблон: только проверяем, что образ собирается
-          tags: fastapi:ci
+          tags: full-fastapi:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max

@@ -3,7 +3,7 @@
 # Бэкенд через uvicorn --reload, проброс кода как volume для горячей перезагрузки.
 # Nginx/certbot включены, но для локалки HTTPS работает на self-signed (см. nginx setup).
 # ============================================================
-name: fastapi-dev
+name: full-fastapi-dev
 
 x-backend-env: &backend-env
   env_file: .env

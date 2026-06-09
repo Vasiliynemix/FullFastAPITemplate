@@ -6,7 +6,7 @@
 # * горизонтальное масштабирование: deploy.replicas + nginx балансирует upstream;
 # * JSON-логи; certbot-контейнер с авто-renew; nginx с авто-reload.
 # ============================================================
-name: fastapi
+name: full-fastapi
 
 services:
   backend:
@@ -169,7 +169,7 @@ services:
 volumes:
   pgdata:
     external: true
-    name: fastapi_pgdata
+    name: full-fastapi_pgdata
   certbot_conf:
     external: true
-    name: fastapi_certbot_conf
+    name: full-fastapi_certbot_conf

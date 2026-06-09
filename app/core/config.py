@@ -56,7 +56,7 @@ class Settings(BaseSettings):
     )
 
     # --- App ---
-    app_name: str = "fastapi"
+    app_name: str = "full-fastapi"
     environment: Environment = Environment.DEV
     debug: bool = True
     host: str = "0.0.0.0"
