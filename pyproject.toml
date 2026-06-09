@@ -3,7 +3,7 @@ name = "full-fastapi-template"
 version = "0.1.0"
 description = "Production-grade high-load FastAPI backend template"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.13,<3.14"
 license = { text = "MIT" }
 authors = [{ name = "Backend Platform Team" }]
 

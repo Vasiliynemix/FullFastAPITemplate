@@ -9,7 +9,7 @@ build/
 dist/
 .venv/
 venv/
-.python-version
+# .python-version КОММИТИМ — пин версии Python (3.13) для uv, общий для всех клонов
 
 # ============================================================
 # Env / secrets — .env НЕ коммитим, .env.example коммитим
