@@ -26,3 +26,6 @@
 - [0006](0006-auth-token-transport.md) — транспорт токена: header XOR cookie
 - [0007](0007-eager-loading.md) — eager-load relationship через `options` (async-требование)
 - [0008](0008-unit-of-work-lifecycle.md) — UnitOfWork: ленивый, один на транзакцию
+- [0009](0009-query-and-search.md) — универсальные фильтры/сортировка + умный (fuzzy) поиск
+- [0010](0010-idempotency-keys.md) — идемпотентность POST через `Idempotency-Key` (хелпер + required по риску)
+- [0011](0011-acquiring-abstraction.md) — абстракция эквайринга (SDK vs свой HTTP-клиент, дженерик `RawT`)

@@ -33,6 +33,10 @@ class AbstractStorage(ABC):
     async def close(self) -> None:
         return None
 
+    async def healthcheck(self) -> bool:
+        """Доступно ли хранилище (для /health/ready). По умолчанию True; S3 переопределяет."""
+        return True
+
     @abstractmethod
     async def put(self, key: str, data: bytes, *, content_type: str | None = None) -> None:
         """Сохранить объект (перезаписывает существующий)."""

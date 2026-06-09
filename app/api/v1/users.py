@@ -13,13 +13,19 @@ CRUD-эндпоинты пользователей.
 from __future__ import annotations
 
 import uuid
-from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, status
 from fastapi.responses import StreamingResponse
 
-from app.api.deps import CurrentUserDep, IdempotencyKey, UserServiceDep, require_roles
-from app.idempotency.store import get_idempotency_store
+from app.api.deps import (
+    CurrentUserDep,
+    IdempotencyKey,
+    ListParamsDep,
+    UserServiceDep,
+    require_roles,
+)
+from app.idempotency import idempotent
+from app.schemas.account import ProfileRead, ProfileUpsert
 from app.schemas.response import (
     EmptyResponse,
     ResponseMeta,
@@ -49,22 +55,11 @@ async def create_user(
     service: UserServiceDep,
     idempotency_key: IdempotencyKey = None,
 ) -> SuccessResponse[UserRead]:
-    # Идемпотентность для безопасных ретраев создания
-    if idempotency_key:
-        store = get_idempotency_store()
-        hit = await store.try_acquire(idempotency_key)
-        if hit.found and hit.response is not None:
-            return SuccessResponse[UserRead].model_validate(hit.response)
-        try:
-            created = await service.create(data)
-        except Exception:
-            await store.release(idempotency_key)
-            raise
-        response = success(created)
-        await store.save_response(idempotency_key, response.model_dump(mode="json"))
-        return response
+    # Идемпотентность опциональна: при наличии ключа ретраи безопасны (логика в idempotent()).
+    async def _produce() -> SuccessResponse[UserRead]:
+        return success(await service.create(data))
 
-    return success(await service.create(data))
+    return await idempotent(idempotency_key, SuccessResponse[UserRead], _produce)
 
 
 @router.get("/{user_id}", response_model=SuccessResponse[UserRead])
@@ -78,15 +73,18 @@ async def get_user(
 
 @router.get("", response_model=SuccessResponse[list[UserRead]])
 async def list_users(
-    service: UserServiceDep,
-    page: Annotated[int, Query(ge=1)] = 1,
-    per_page: Annotated[int, Query(ge=1, le=200)] = 50,
+    service: UserServiceDep, params: ListParamsDep
 ) -> SuccessResponse[list[UserRead]]:
-    # Постраничная навигация: page (с 1) -> offset для слоя данных
-    offset = (page - 1) * per_page
-    items, total = await service.list(limit=per_page, offset=offset)
-    pages = (total + per_page - 1) // per_page  # ceil(total / per_page)
-    meta = ResponseMeta(page=page, per_page=per_page, total=total, pages=pages)
+    """Список пользователей. Пагинация/фильтры/сортировка/поиск — см. описание API сверху."""
+    items, total = await service.list(
+        page=params.page,
+        per_page=params.per_page,
+        filters=params.filters,
+        sort=params.sort,
+        q=params.q,
+    )
+    pages = (total + params.per_page - 1) // params.per_page  # ceil(total / per_page)
+    meta = ResponseMeta(page=params.page, per_page=params.per_page, total=total, pages=pages)
     return success(list(items), meta=meta)
 
 
@@ -97,6 +95,16 @@ async def update_user(
     service: UserServiceDep,
 ) -> SuccessResponse[UserRead]:
     return success(await service.update(user_id, data))
+
+
+@router.put("/{user_id}/profile", response_model=SuccessResponse[ProfileRead])
+async def upsert_profile(
+    user_id: uuid.UUID,
+    data: ProfileUpsert,
+    service: UserServiceDep,
+) -> SuccessResponse[ProfileRead]:
+    """Создать/обновить профиль пользователя (демо связи one-to-one User ↔ Profile)."""
+    return success(await service.upsert_profile(user_id, data))
 
 
 @router.delete(

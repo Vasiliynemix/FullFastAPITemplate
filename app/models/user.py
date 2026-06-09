@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin, VersionedMixin
+from app.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin, VersionedMixin, trgm_index
 from app.security.roles import DEFAULT_ROLE, Role
 
 if TYPE_CHECKING:
@@ -17,6 +17,13 @@ if TYPE_CHECKING:
 
 class User(UUIDPrimaryKeyMixin, TimestampMixin, VersionedMixin, Base):
     __tablename__ = "users"
+
+    # GIN-триграммные индексы под умный поиск (search_fields в UserRepository).
+    # Объявлены декларативно — миграция создаётся автогеном/op.create_index, без сырого SQL.
+    __table_args__ = (
+        trgm_index("ix_users_full_name_trgm", "full_name"),
+        trgm_index("ix_users_email_trgm", "email"),
+    )
 
     # index=True на email — ускоряет частые выборки/логин по email (hot path)
     email: Mapped[str] = mapped_column(String(320), unique=True, index=True, nullable=False)

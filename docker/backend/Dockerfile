@@ -49,7 +49,7 @@ COPY docker/backend/entrypoint.sh /entrypoint.sh
 # entrypoint роняет привилегии до app через gosu.
 RUN chmod +x /entrypoint.sh && mkdir -p /app/logs && chown -R app:app /app
 
-EXPOSE 8000
+EXPOSE 8080
 
 ENTRYPOINT ["/entrypoint.sh"]
 # По умолчанию prod-запуск; в dev переопределяется в compose

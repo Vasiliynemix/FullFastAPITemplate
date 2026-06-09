@@ -32,6 +32,14 @@ class BrokerType(StrEnum):
     RABBITMQ = "rabbitmq"
 
 
+class AcquirerName(StrEnum):
+    """Имена платёжных систем — ключи реестра эквайринга (а не строки)."""
+
+    MEMORY = "memory"  # заглушка (в проде запрещена)
+    YOOKASSA = "yookassa"
+    # ── новый провайдер: <NAME> = "<name>"
+
+
 class AuthTransport(StrEnum):
     """Где живёт токен в авторизации — что-то ОДНО (не оба сразу)."""
 
@@ -52,7 +60,7 @@ class Settings(BaseSettings):
     environment: Environment = Environment.DEV
     debug: bool = True
     host: str = "0.0.0.0"
-    port: int = 8000
+    port: int = 8080
     api_v1_prefix: str = "/api/v1"
     cors_origins: str = "http://localhost:3000"
 
@@ -90,6 +98,12 @@ class Settings(BaseSettings):
     rate_limit_burst: int = 0
     rate_limit_burst_window: int = 1
 
+    # --- Search (умный поиск q, pg_trgm) ---
+    # Порог триграммной похожести для q. Ниже => терпимее к опечаткам (ловит даже
+    # перестановки букв, напр. «всая»~«вася»≈0.11), но больше слабых совпадений.
+    # Выше (напр. 0.3) => строже/точнее. На SQLite не используется (там ILIKE-фолбэк).
+    search_similarity_threshold: float = 0.1
+
     # --- Broker ---
     # broker_enabled=false => не поднимаем брокер и консьюмеров, не публикуем события,
     # ручки /notifications и outbox-relay отключаются (если события не нужны).
@@ -124,6 +138,20 @@ class Settings(BaseSettings):
     # --- Внешний API сообщений (MessagesClient) ---
     messages_api_base_url: str = ""
     messages_api_key: str = ""
+
+    # --- Acquiring (платёжный эквайринг) ---
+    # Платёжных систем может быть НЕСКОЛЬКО одновременно — у каждой свой *_enabled флаг.
+    # Фабрика собирает все включённые (app/acquiring/factory.py). Добавить провайдера =
+    # реализация + флаг тут + одна ветка в фабрике.
+    acquiring_currency: str = "RUB"  # валюта по умолчанию (ISO 4217)
+    acquiring_return_url: str = ""  # куда вернуть пользователя после оплаты
+    # memory — заглушка без сети (тесты/локалка). В ПРОДЕ запрещена (валидатор ниже).
+    acquiring_memory_enabled: bool = False
+    # YooKassa: креды shopId/секретный ключ из ЛК (SDK ходит по HTTP Basic).
+    yookassa_enabled: bool = False
+    yookassa_shop_id: str = ""
+    yookassa_secret_key: str = ""
+    # ── новый провайдер: <name>_enabled: bool = False + его креды
 
     # --- Logging ---
     log_level: str = "INFO"
@@ -188,6 +216,12 @@ class Settings(BaseSettings):
     docs_basic_auth_user: str = ""
     docs_basic_auth_password: str = ""
 
+    # --- Health ---
+    # Показывать активный конфиг в /health/ready. /ready открыт (без авторизации), а конфиг
+    # раскрывает стек/защитную конфигурацию — поэтому в проде по умолчанию СКРЫТ. В dev
+    # показывается всегда (для удобства). true => показывать и в проде (на свой риск).
+    health_expose_config: bool = False
+
     @model_validator(mode="after")
     def _validate_auth_modes(self) -> Settings:
         # Нельзя выключить ОБА контура — сервис остался бы без защиты
@@ -207,6 +241,21 @@ class Settings(BaseSettings):
                     "браузеру негде хранить секретный ключ. Используйте header-транспорт "
                     "или выключите глобальный ключ."
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_acquiring(self) -> Settings:
+        # memory-эквайринг — заглушка без реальных платежей; в проде это недопустимо.
+        # Падаем явно при старте, а не «принимаем игрушечные платежи» в продакшене.
+        if self.is_prod and self.acquiring_memory_enabled:
+            raise ValueError(
+                "ACQUIRING_MEMORY_ENABLED=true запрещён в проде (memory — заглушка). "
+                "Выключите его и включите реальный провайдер (например YOOKASSA_ENABLED)."
+            )
+        # Включённый провайдер без кред — мисконфигурация: падаем на старте, а не на
+        # первом платеже. Новый провайдер -> добавьте сюда проверку его обязательных полей.
+        if self.yookassa_enabled and not (self.yookassa_shop_id and self.yookassa_secret_key):
+            raise ValueError("YOOKASSA_ENABLED=true требует YOOKASSA_SHOP_ID и YOOKASSA_SECRET_KEY")
         return self
 
     @property

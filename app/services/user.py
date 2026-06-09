@@ -17,14 +17,18 @@ import uuid
 from collections.abc import AsyncIterator, Sequence
 from typing import ClassVar
 
+from sqlalchemy.orm import selectinload
 from sqlalchemy.orm.exc import StaleDataError
 
 from app.broker.events import Event
 from app.cache.base import AbstractCache
+from app.db.query import sanitize_q
 from app.db.uow import UnitOfWork
 from app.decorators.logging import logged
 from app.exceptions.base import ConflictError, NotFoundError
+from app.models.profile import Profile
 from app.models.user import User
+from app.schemas.account import ProfileRead, ProfileUpsert
 from app.schemas.user import UserCreate, UserRead, UserUpdate
 from app.security.session_store import SessionStore
 
@@ -87,10 +91,21 @@ class UserService:
         return dto
 
     @logged("user.list")
-    async def list(self, *, limit: int = 50, offset: int = 0) -> tuple[Sequence[UserRead], int]:
+    async def list(
+        self,
+        *,
+        page: int = 1,
+        per_page: int = 50,
+        filters: dict[str, str] | None = None,
+        sort: str | None = None,
+        q: str | None = None,
+    ) -> tuple[Sequence[UserRead], int]:
+        # q санитизируем (срезаем HTML/control); пустую строку превращаем в None
+        clean_q = sanitize_q(q) if q else None
         async with self.uow:
-            users = await self.uow.users.list(limit=limit, offset=offset, order_by=User.created_at)
-            total = await self.uow.users.count()
+            users, total = await self.uow.users.paginate(
+                page=page, per_page=per_page, filters=filters, sort=sort, q=clean_q or None
+            )
         return [UserRead.model_validate(u) for u in users], total
 
     @logged("user.update")
@@ -125,6 +140,25 @@ class UserService:
         # access истечёт по TTL, либо сразу при AUTH_VALIDATE_SESSION=true)
         if self.sessions is not None:
             await self.sessions.revoke_all(str(user_id))
+
+    @logged("user.upsert_profile")
+    async def upsert_profile(self, user_id: uuid.UUID, data: ProfileUpsert) -> ProfileRead:
+        """Создать или обновить профиль пользователя (демо one-to-one). Идемпотентно по сути."""
+        # Переданы только реально присланные поля (PUT-партиал): exclude_unset
+        values = data.model_dump(exclude_unset=True)
+        async with self.uow:
+            # profile грузим сразу (eager) — иначе доступ к user.profile
+            # в async уронит MissingGreenlet.
+            user = await self.uow.users.get(user_id, options=[selectinload(User.profile)])
+            if user is None:
+                raise NotFoundError("User not found")
+            if user.profile is None:
+                user.profile = Profile(**values)  # one-to-one: FK проставится из user.id при flush
+            else:
+                for field, value in values.items():
+                    setattr(user.profile, field, value)
+            await self.uow.commit()
+            return ProfileRead.model_validate(user.profile)
 
     async def stream_all(self) -> AsyncIterator[bytes]:
         """

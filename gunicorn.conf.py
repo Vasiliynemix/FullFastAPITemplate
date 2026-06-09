@@ -59,5 +59,5 @@ errorlog = "-"
 loglevel = settings.log_level.lower()
 
 
-def on_starting(server) -> None:  # noqa: ANN001, ARG001
+def on_starting(server) -> None:
     pass

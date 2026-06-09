@@ -48,6 +48,9 @@ class KafkaBroker(AbstractBroker):
             await self._producer.stop()
         logger.info("broker_disconnected", backend="kafka")
 
+    async def healthcheck(self) -> bool:
+        return self._producer is not None
+
     async def publish(self, message: Message) -> None:
         assert self._producer is not None, "Broker not connected"
         key = message.key.encode() if message.key else None

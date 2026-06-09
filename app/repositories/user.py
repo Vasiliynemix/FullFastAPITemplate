@@ -15,6 +15,8 @@ from app.repositories.base import BaseRepository
 
 class UserRepository(BaseRepository[User]):
     model = User
+    # Поля для умного поиска q (pg_trgm / ILIKE)
+    search_fields = ("full_name", "email")
 
     async def get_by_email(self, email: str) -> User | None:
         return await self.get_by(email=email)

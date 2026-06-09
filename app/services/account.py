@@ -14,16 +14,35 @@ from __future__ import annotations
 import uuid
 from collections.abc import Sequence
 
+from sqlalchemy.exc import IntegrityError
+
+from app.core.config import AcquirerName
 from app.db.uow import UnitOfWork
 from app.decorators.logging import logged
 from app.exceptions.base import ConflictError, NotFoundError
-from app.models.account import Account, Transaction
-from app.schemas.account import AccountRead, AccountWithTransactions, UserOverview
+from app.models.account import Account, Category, Transaction
+from app.schemas.account import AccountRead, AccountWithTransactions, CategoryRead, UserOverview
 
 
 class AccountService:
     def __init__(self, uow: UnitOfWork) -> None:
         self.uow = uow
+
+    @logged("category.create")
+    async def create_category(self, name: str) -> CategoryRead:
+        async with self.uow:
+            try:
+                cat = await self.uow.categories.add(Category(name=name))
+                await self.uow.commit()  # name UNIQUE -> дубль даст IntegrityError
+            except IntegrityError as exc:
+                raise ConflictError("Category with this name already exists") from exc
+            return CategoryRead.model_validate(cat)
+
+    @logged("category.list")
+    async def list_categories(self) -> list[CategoryRead]:
+        async with self.uow:
+            cats = await self.uow.categories.list(order_by=Category.name)
+            return [CategoryRead.model_validate(c) for c in cats]
 
     @logged("account.create")
     async def create_account(self, user_id: uuid.UUID, name: str) -> AccountRead:
@@ -46,7 +65,11 @@ class AccountService:
 
     @logged("account.deposit")
     async def deposit(
-        self, account_id: uuid.UUID, amount: int, category_ids: Sequence[uuid.UUID] = ()
+        self,
+        account_id: uuid.UUID,
+        amount: int,
+        acquirer: AcquirerName,
+        category_ids: Sequence[uuid.UUID] = (),
     ) -> AccountRead:
         async with self.uow:
             # FOR UPDATE: блокируем строку счёта на время операции (без гонок баланса)
@@ -54,16 +77,22 @@ class AccountService:
             if acc is None:
                 raise NotFoundError("Account not found")
             acc.balance += amount
-            tx = Transaction(account_id=acc.id, amount=amount, kind="deposit")
+            tx = Transaction(account_id=acc.id, amount=amount, kind="deposit", acquirer=acquirer)
             if category_ids:
-                # many-to-many запись: привязываем существующие категории к новой транзакции
-                tx.categories = await self.uow.categories.get_many(category_ids)
+                # many-to-many запись + ВАЛИДАЦИЯ: неизвестный category_id -> 404,
+                # а не молчаливый пропуск (раньше get_many просто отбрасывал несуществующие)
+                cats = await self.uow.categories.get_many(category_ids)
+                if len(cats) != len(set(category_ids)):
+                    raise NotFoundError("One or more categories not found")
+                tx.categories = cats
             await self.uow.transactions.add(tx)
             await self.uow.commit()
             return AccountRead.model_validate(acc)
 
     @logged("account.withdraw")
-    async def withdraw(self, account_id: uuid.UUID, amount: int) -> AccountRead:
+    async def withdraw(
+        self, account_id: uuid.UUID, amount: int, acquirer: AcquirerName
+    ) -> AccountRead:
         async with self.uow:
             acc = await self.uow.accounts.get(account_id, for_update=True)
             if acc is None:
@@ -73,7 +102,7 @@ class AccountService:
                 raise ConflictError("Insufficient funds")
             acc.balance -= amount
             await self.uow.transactions.add(
-                Transaction(account_id=acc.id, amount=-amount, kind="withdrawal")
+                Transaction(account_id=acc.id, amount=-amount, kind="withdrawal", acquirer=acquirer)
             )
             await self.uow.commit()
             return AccountRead.model_validate(acc)

@@ -24,9 +24,8 @@ from starlette.requests import Request
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app.core.config import settings
-from app.core.context import get_request_id
 from app.ratelimit.limiter import get_rate_limiter
-from app.schemas.response import ErrorCode, ErrorData, ErrorResponse, ResponseMeta
+from app.schemas.response import ErrorCode, error
 
 # Те же исключения, что и у ApiKeyMiddleware. ВАЖНО: health под префиксом версии,
 # поэтому берём полный путь из настроек, иначе startswith не сработает.
@@ -52,10 +51,7 @@ class RateLimitMiddleware:
         result = await get_rate_limiter().check(identity)
 
         if not result.allowed:
-            payload = ErrorResponse(
-                data=ErrorData(code=ErrorCode.RATE_LIMITED, message="Too many requests"),
-                meta=ResponseMeta(request_id=get_request_id()),
-            )
+            payload = error("Too many requests", code=ErrorCode.RATE_LIMITED)
             response = JSONResponse(
                 status_code=429,
                 content=payload.model_dump(mode="json"),

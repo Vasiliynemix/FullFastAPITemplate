@@ -34,6 +34,8 @@ from typing import Any, Generic, TypeVar
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
+from app.db.query import apply_filters, apply_search, apply_sort
 from app.models.base import Base
 
 ModelT = TypeVar("ModelT", bound=Base)
@@ -41,9 +43,58 @@ ModelT = TypeVar("ModelT", bound=Base)
 
 class BaseRepository(Generic[ModelT]):
     model: type[ModelT]
+    # Колонки, по которым ищет q (умный поиск). Переопредели в наследнике, напр. ("full_name",).
+    search_fields: tuple[str, ...] = ()
 
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
+
+    def _dialect(self) -> str:
+        return self.session.get_bind().dialect.name  # postgresql | sqlite | ...
+
+    async def paginate(
+        self,
+        *,
+        page: int = 1,
+        per_page: int = 50,
+        filters: dict[str, str] | None = None,
+        sort: str | None = None,
+        q: str | None = None,
+        options: Sequence[Any] | None = None,
+    ) -> tuple[Sequence[ModelT], int]:
+        """
+        Универсальный список: фильтры (field__op) + сортировка + умный поиск q. Возвращает
+        (страница, total). Поля валидируются по колонкам модели (см. app/db/query.py).
+
+        options — loader-опции (selectinload/...) для eager-загрузки relationship элементов
+        страницы (в async обязательны, если сериализуешь связи). Применяются ТОЛЬКО к выборке
+        элементов, а не к COUNT (чтобы не тянуть связи в подсчёте).
+        """
+        stmt = select(self.model)
+        if filters:
+            stmt = apply_filters(stmt, self.model, filters)
+        order = None
+        if q and self.search_fields:
+            stmt, order = apply_search(
+                stmt,
+                self.model,
+                q,
+                list(self.search_fields),
+                dialect=self._dialect(),
+                threshold=settings.search_similarity_threshold,
+            )
+        # total — после фильтров/поиска, до eager-load/сортировки/пагинации
+        total = (
+            await self.session.execute(select(func.count()).select_from(stmt.subquery()))
+        ).scalar_one()
+        # eager-load — только на выборку элементов (не на COUNT выше)
+        if options:
+            stmt = stmt.options(*options)
+        # при поиске сортируем по релевантности, иначе — sort/дефолт (created_at asc)
+        stmt = stmt.order_by(order) if order is not None else apply_sort(stmt, self.model, sort)
+        stmt = stmt.limit(per_page).offset((page - 1) * per_page)
+        items = (await self.session.execute(stmt)).scalars().all()
+        return items, total
 
     @staticmethod
     def _lock(stmt: Any, *, for_update: bool, nowait: bool, skip_locked: bool) -> Any:
@@ -98,6 +149,14 @@ class BaseRepository(Generic[ModelT]):
         skip_locked: bool = False,
         options: Sequence[Any] | None = None,
     ) -> Sequence[ModelT]:
+        """
+        НИЗКОУРОВНЕВЫЙ примитив выборки: limit/offset + order_by, без COUNT и без total.
+        Для внутренних батч-операций и очередей (`for_update=True, skip_locked=True` —
+        «забрать пачку, минуя занятые строки»).
+
+        Для СПИСОЧНЫХ РУЧЕК используй paginate() — он даёт total + фильтры (field__op) +
+        сортировку + умный поиск q. Здесь этого намеренно нет (это «голая» выборка).
+        """
         stmt = select(self.model).limit(limit).offset(offset)
         if order_by is not None:
             stmt = stmt.order_by(order_by)

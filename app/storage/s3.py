@@ -80,6 +80,14 @@ class S3Storage(AbstractStorage):
             raise RuntimeError("S3Storage не подключён (вызовите connect() в lifespan)")
         return self._client
 
+    async def healthcheck(self) -> bool:
+        # head_bucket — дешёвая проверка доступности бакета/кредов
+        try:
+            await self._c().head_bucket(Bucket=self._bucket)
+            return True
+        except Exception:
+            return False
+
     @staticmethod
     def _is_not_found(exc: Exception) -> bool:
         from botocore.exceptions import ClientError

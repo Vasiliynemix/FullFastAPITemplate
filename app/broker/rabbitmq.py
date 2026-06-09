@@ -43,6 +43,9 @@ class RabbitMQBroker(AbstractBroker):
             await self._connection.close()
         logger.info("broker_disconnected", backend="rabbitmq")
 
+    async def healthcheck(self) -> bool:
+        return self._connection is not None and not self._connection.is_closed
+
     async def publish(self, message: Message) -> None:
         import aio_pika
 

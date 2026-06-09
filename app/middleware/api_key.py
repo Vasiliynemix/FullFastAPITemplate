@@ -22,8 +22,7 @@ from fastapi.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app.core.config import settings
-from app.core.context import get_request_id
-from app.schemas.response import ErrorCode, ErrorData, ErrorResponse, ResponseMeta
+from app.schemas.response import ErrorCode, error
 
 # Те же исключения, что и у rate limit — служебные пути не закрываем ключом
 _EXEMPT_PREFIXES = (f"{settings.api_v1_prefix}/health", "/docs", "/redoc", "/openapi.json")
@@ -63,9 +62,6 @@ class ApiKeyMiddleware:
 
     @staticmethod
     async def _reject(scope: Scope, receive: Receive, send: Send) -> None:
-        payload = ErrorResponse(
-            data=ErrorData(code=ErrorCode.UNAUTHORIZED, message="Invalid or missing API key"),
-            meta=ResponseMeta(request_id=get_request_id()),
-        )
+        payload = error("Invalid or missing API key", code=ErrorCode.UNAUTHORIZED)
         response = JSONResponse(status_code=401, content=payload.model_dump(mode="json"))
         await response(scope, receive, send)

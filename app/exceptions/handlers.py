@@ -14,10 +14,9 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.core.context import get_request_id
 from app.core.logging import caller_location, get_logger
 from app.exceptions.base import ServerException
-from app.schemas.response import ErrorCode, ErrorData, ErrorResponse, ResponseMeta
+from app.schemas.response import ErrorCode, error
 
 logger = get_logger("exceptions")
 
@@ -41,10 +40,7 @@ def _render(
     details: list[dict[str, object]] | None = None,
     headers: dict[str, str] | None = None,
 ) -> JSONResponse:
-    payload = ErrorResponse(
-        data=ErrorData(code=code, message=message, details=details),
-        meta=ResponseMeta(request_id=get_request_id()),
-    )
+    payload = error(message, code=code, details=details)
     # model_dump(mode="json") даёт JSON-safe примитивы — стандартный JSONResponse их кодирует
     return JSONResponse(
         status_code=status_code, content=payload.model_dump(mode="json"), headers=headers

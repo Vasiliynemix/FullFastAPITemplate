@@ -13,7 +13,8 @@ import uuid
 
 from fastapi import APIRouter, status
 
-from app.api.deps import AccountServiceDep
+from app.api.deps import AccountServiceDep, RequiredIdempotencyKey
+from app.idempotency import idempotent
 from app.schemas.account import (
     AccountRead,
     AccountWithTransactions,
@@ -28,9 +29,14 @@ router = APIRouter()
 
 @router.post("", response_model=SuccessResponse[AccountRead], status_code=status.HTTP_201_CREATED)
 async def create_account(
-    data: CreateAccountRequest, service: AccountServiceDep
+    data: CreateAccountRequest,
+    service: AccountServiceDep,
+    idempotency_key: RequiredIdempotencyKey,
 ) -> SuccessResponse[AccountRead]:
-    return success(await service.create_account(data.user_id, data.name))
+    async def _produce() -> SuccessResponse[AccountRead]:
+        return success(await service.create_account(data.user_id, data.name))
+
+    return await idempotent(idempotency_key, SuccessResponse[AccountRead], _produce)
 
 
 @router.get("/overview/{user_id}", response_model=SuccessResponse[UserOverview])
@@ -51,13 +57,28 @@ async def get_account(
 
 @router.post("/{account_id}/deposit", response_model=SuccessResponse[AccountRead])
 async def deposit(
-    account_id: uuid.UUID, data: AmountRequest, service: AccountServiceDep
+    account_id: uuid.UUID,
+    data: AmountRequest,
+    service: AccountServiceDep,
+    idempotency_key: RequiredIdempotencyKey,
 ) -> SuccessResponse[AccountRead]:
-    return success(await service.deposit(account_id, data.amount, data.category_ids))
+    # Деньги: ретрай по сети не должен задвоить операцию -> Idempotency-Key обязателен на проде
+    async def _produce() -> SuccessResponse[AccountRead]:
+        return success(
+            await service.deposit(account_id, data.amount, data.acquirer, data.category_ids)
+        )
+
+    return await idempotent(idempotency_key, SuccessResponse[AccountRead], _produce)
 
 
 @router.post("/{account_id}/withdraw", response_model=SuccessResponse[AccountRead])
 async def withdraw(
-    account_id: uuid.UUID, data: AmountRequest, service: AccountServiceDep
+    account_id: uuid.UUID,
+    data: AmountRequest,
+    service: AccountServiceDep,
+    idempotency_key: RequiredIdempotencyKey,
 ) -> SuccessResponse[AccountRead]:
-    return success(await service.withdraw(account_id, data.amount))
+    async def _produce() -> SuccessResponse[AccountRead]:
+        return success(await service.withdraw(account_id, data.amount, data.acquirer))
+
+    return await idempotent(idempotency_key, SuccessResponse[AccountRead], _produce)

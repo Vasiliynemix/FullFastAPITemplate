@@ -22,6 +22,21 @@ from pydantic import BaseModel
 
 from app.core.context import get_request_id
 
+# Публичный API модуля. Конверты ответов собираются ТОЛЬКО через хелперы success()/error()/
+# empty() — это гарантирует единый стиль (request_id из контекста, дефолты кодов). Прямое
+# конструирование классов вне этого модуля запрещено и проверяется tests/test_response_contract.py.
+__all__ = [
+    "EmptyResponse",
+    "ErrorCode",
+    "ErrorResponse",
+    "ResponseMeta",
+    "ServerResponse",
+    "SuccessResponse",
+    "empty",
+    "error",
+    "success",
+]
+
 T = TypeVar("T")
 
 
@@ -113,8 +128,11 @@ def error(
     *,
     code: ErrorCode = ErrorCode.INTERNAL,
     details: list[dict[str, object]] | None = None,
-    request_id: str | None = None,
 ) -> ErrorResponse:
-    """Хелпер для сборки ответа-ошибки."""
-    meta = ResponseMeta(request_id=request_id) if request_id else None
+    """
+    Хелпер для сборки ответа-ошибки (симметричен success()).
+    request_id подмешивается из контекста запроса автоматически.
+    """
+    rid = get_request_id()
+    meta = ResponseMeta(request_id=rid) if rid else None
     return ErrorResponse(data=ErrorData(code=code, message=message, details=details), meta=meta)

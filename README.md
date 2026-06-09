@@ -17,6 +17,7 @@ Redis rate limiting, идемпотентность и полностью кон
 | Web | FastAPI (async), Uvicorn (dev), Gunicorn + UvicornWorker (prod) |
 | ORM | SQLAlchemy 2.x (async) + asyncpg, Alembic |
 | Хранилища | PostgreSQL (тюнингованный пул), Redis (кэш / rate limit / pub-sub) |
+| Списки | Универсальные фильтры/сортировка + умный (fuzzy) поиск через pg_trgm |
 | Брокер | Абстракция + memory / Kafka (aiokafka) / RabbitMQ (aio-pika) |
 | События | Типизированный EventBus + **transactional outbox** (надёжная доставка) |
 | Объектное хранилище | S3-совместимое (aioboto3): AWS S3 / MinIO / Yandex Object Storage |
@@ -30,7 +31,7 @@ Redis rate limiting, идемпотентность и полностью кон
 
 ```
                  ┌───────────── Nginx (TLS, rate-limit, gzip, LB) ──────────────┐
-HTTPS ──────────►│  reverse proxy → upstream keepalive → backend:8000 (×N реплик) │
+HTTPS ──────────►│  reverse proxy → upstream keepalive → backend:8080 (×N реплик) │
                  └───────────────────────────────────────────────────────────────┘
                                           │
         ┌─────────────────────────────────┴─────────────────────────────────┐
@@ -130,6 +131,35 @@ class MessagesClient(EnvelopeMixin, ApiKeyHeaderHTTPClient):   # auth + расп
 Готовый клиент этого API — [app/clients/messages.py](app/clients/messages.py); примеры
 auth-схем — [app/clients/example.py](app/clients/example.py).
 
+### Эквайринг (платежи)
+
+`AbstractAcquirer` ([app/acquiring/base.py](app/acquiring/base.py)) — абстракция платежей
+по аналогии с брокером/хранилищем: бизнес-логика работает с доменными `Payment`/`Refund`,
+не зная о провайдере. Методы: `create_payment` / `get_payment` / `capture_payment` /
+`cancel_payment` / `create_refund` / `parse_webhook`.
+
+Модели — дженерики по `RawT` (тип «сырого» ответа в поле `raw`). Правило выбора транспорта:
+
+- **есть SDK** (YooKassa) → используем РОДНОЙ клиент SDK, не свой HTTP. Синхронный SDK
+  уносим в пул потоков (`anyio.to_thread`, как argon2). `raw` = объект SDK. SDK импортируется
+  лениво — пакет `yookassa` не тянется, если эквайринг не используется.
+- **нет SDK** → клиент на [`BaseHTTPClient`](app/clients/base.py) (см. выше), `raw` = `dict`.
+
+**Несколько систем сразу.** Платёжек может работать много одновременно — у каждой свой флаг
+(`YOOKASSA_ENABLED`, …), а не единый «тип». Фабрика [factory.py](app/acquiring/factory.py)
+собирает все включённые в реестр, ключ — **enum `AcquirerName`** (не строки):
+`get_acquirers()` / `get_acquirer(AcquirerName.YOOKASSA)` — опечатка в имени ловится типами.
+Конфиг валидируется на старте: `memory` в проде, а также включённый провайдер без кред →
+ошибка при запуске (а не на первом платеже). Добавить провайдера = значение в `AcquirerName`
++ флаг/креды + ветка в фабрике.
+
+Реализации: [yookassa.py](app/acquiring/yookassa.py) (боевой), [memory.py](app/acquiring/memory.py)
+(заглушка без сети — для тестов/локалки; **в проде запрещена** — старт упадёт с явной ошибкой).
+Подробнее — [ADR-0011](docs/adr/0011-acquiring-abstraction.md).
+
+> Компонент намеренно **не внедрён** в роуты/lifespan — это заготовка под доменную интеграцию
+> (создать платёж → редирект на `confirmation_url` → вебхук/опрос статуса → выдать товар).
+
 ### Брокер: типизированные события и консьюмеры
 
 Тяжёлые сайд-эффекты (вызов внешнего API, рассылки) выносят из request lifecycle через
@@ -216,7 +246,7 @@ fan-out корректен и на распределённых брокерах
 - **Stateless-приложение** → горизонтальное масштабирование репликами за Nginx.
 - **Raw SQL** разрешён в репозитории для самых горячих запросов (`UserRepository.search_raw`).
 - **Streaming через генераторы** (`/users/stream/all`, NDJSON) — константная память на больших выборках.
-- **Идемпотентность** (`Idempotency-Key`) и **распределённый rate limit** — многоярусный (минутная квота + burst/сек), atomic Lua в Redis.
+- **Идемпотентность** (`Idempotency-Key`, хелпер `idempotent()`) — **обязательна** на денежных ручках (deposit/withdraw/создание счёта; без заголовка → `422`), опциональна на создании пользователя: повтор по ключу не задвоит операцию, параллельный in-flight → `409`. Плюс **распределённый rate limit** — многоярусный (минутная квота + burst/сек), atomic Lua в Redis.
 
 ---
 
@@ -259,6 +289,10 @@ Basic Auth:
 - `ErrorCode` — расширяемый enum машинных кодов.
 - `ResponseMeta` — `request_id`, пагинация, произвольные `extra`.
 - Глобальные хендлеры (`app/exceptions/handlers.py`) конвертируют **всё** — `ServerException`, `RequestValidationError`, `HTTPException`, любые `Exception` — в `ErrorResponse`. Сырые ошибки клиенту не утекают.
+
+**Контракт сборки.** Конверты собираются ТОЛЬКО через хелперы `success()` / `error()` / `empty()` — они подмешивают `request_id` из контекста и дефолты. Прямое конструирование классов (`SuccessResponse(...)` и т.п.) вне `app/schemas/response.py` запрещено и ловится тестом `tests/test_response_contract.py`.
+
+> **Единственное исключение — idempotency-replay.** При повторе запроса с тем же `Idempotency-Key` ответ берётся из кэша через `SuccessResponse[...].model_validate(cached)`, а **не** через `success()`: это рехидрация уже собранного ранее конверта (вместе с его `meta`), а не сборка нового — `success()` переобернул бы данные заново. Вся эта логика инкапсулирована в `idempotent()` (`app/idempotency/runner.py`), так что в ручках исключение не размазано. Тест-гард такой `.model_validate` осознанно разрешает.
 
 ---
 
@@ -408,7 +442,11 @@ async with uow:
 acc = await uow.accounts.get(acc_id, options=[selectinload(Account.transactions)])
 # вложенно («транзакции юзера»): профиль + счета + их транзакции одним набором запросов
 user = await uow.users.get_overview(user_id)   # selectinload(User.accounts).selectinload(...)
+# в списках: options грузятся на элементы страницы (не на COUNT)
+items, total = await uow.accounts.paginate(options=[selectinload(Account.transactions)])
 ```
+
+`options=` есть на `get`/`get_by`/`list`/`paginate` — грузи всё, что будешь сериализовать.
 
 Демо-домен **`accounts`** показывает все типы связей и eager-load в ответе API:
 
@@ -421,7 +459,42 @@ user = await uow.users.get_overview(user_id)   # selectinload(User.accounts).sel
 
 Ручки: `GET /accounts/{id}` (счёт + транзакции + категории), `GET /accounts/overview/{user_id}`
 (профиль + счета + вложенные транзакции), `POST /accounts/{id}/deposit|withdraw` (под `for_update`).
-Подробнее — [ADR-0007](docs/adr/0007-eager-loading.md).
+Профиль (one-to-one) пишется через `PUT /users/{id}/profile` (upsert). Подробнее —
+[ADR-0007](docs/adr/0007-eager-loading.md).
+
+---
+
+## 🔎 Умный поиск (фильтры/сортировка/поиск)
+
+Списочные ручки поддерживают `?field__op=value`, `?sort=...`, `?q=...` (см. описание API
+в Swagger). Реализация — `app/db/query.py` (валидация полей по колонкам, приведение типов,
+санитайз `q`) + `BaseRepository.paginate()`.
+
+**Добавить умный поиск (с опечатками) к новой модели — 3 шага, без сырого SQL:**
+
+1. В репозитории укажи поля поиска: `search_fields = ("title", "description")`.
+2. В модель — GIN-триграммный индекс декларативно (хелпер `trgm_index`):
+   ```python
+   from app.models.base import trgm_index
+   class Article(Base):
+       __table_args__ = (trgm_index("ix_articles_title_trgm", "title"),)
+   ```
+3. Миграция — хелперами `app/db/ddl.py` (или `alembic revision --autogenerate`):
+   ```python
+   from app.db.ddl import ensure_pg_trgm, create_trgm_index
+   def upgrade():
+       ensure_pg_trgm()
+       create_trgm_index("ix_articles_title_trgm", "articles", "title")
+   ```
+
+Расширение `pg_trgm` создаётся автоматически (в `create_all` для dev/тестов — через DDL-event;
+в проде — `ensure_pg_trgm()` в миграции). Триграмма — фича Postgres; на SQLite поиск падает
+в ILIKE-подстроку (без устойчивости к опечаткам), индексы становятся обычными.
+
+> Оговорка про `--autogenerate`: alembic не всегда корректно распознаёт `gin_trgm_ops` —
+> сгенерированную миграцию по trgm-индексам стоит просмотреть (или писать через `create_trgm_index`).
+
+Подробнее — [ADR-0009](docs/adr/0009-query-and-search.md).
 
 ---
 
@@ -529,7 +602,7 @@ zcat logs/app.log.1.gz | jq .        # читать архив
 cp .env.example .env
 make up            # backend + postgres + redis + nginx (+ авто-миграции)
 make logs          # смотреть логи backend
-# API:    http://localhost:8000/api/v1/health/live
+# API:    http://localhost:8080/api/v1/health/live
 # Через nginx: https://localhost/  (self-signed cert в dev)
 make down
 ```
@@ -552,11 +625,11 @@ make install       # uv venv + зависимости
 
 make up-deps       # поднять ТОЛЬКО postgres + redis
 make migrate       # накатить миграции (alembic upgrade head)
-make dev           # uvicorn --reload на http://localhost:8000
+make dev           # uvicorn --reload на http://localhost:8080
 
 # Проверка:
-#   curl http://localhost:8000/api/v1/health/ready   # postgres/redis = ok
-#   Swagger UI:  http://localhost:8000/docs           # тут удобно тестить ручки
+#   curl http://localhost:8080/api/v1/health/ready   # postgres/redis = ok
+#   Swagger UI:  http://localhost:8080/docs           # тут удобно тестить ручки
 ```
 
 > Брокер по умолчанию `BROKER_TYPE=memory` — внешний Kafka/RabbitMQ для локалки не нужен.
@@ -649,9 +722,10 @@ make cov           # покрытие
 
 Покрыты: репозитории, сервисы, auth (JWT/сессии/**куки**), **блокировки** (`for_update`
 SQL + оптимистичная `version_id`), **связи + eager-load** (все 4 типа, accounts-домен),
-**ленивый UoW** (кэш/реентерабельность), декораторы, HTTP-клиент, брокер и консьюмеры,
-**outbox** (релей + at-least-once), **storage** (S3 + роутер /files), docs Basic Auth,
-сериализация. БД — async SQLite, Redis — fakeredis, брокер — in-memory.
+**ленивый UoW** (кэш/реентерабельность), **фильтры/сортировка/поиск** (валидация/санитайз),
+декораторы, HTTP-клиент, брокер и консьюмеры, **outbox** (релей + at-least-once),
+**storage** (S3 + роутер /files), docs Basic Auth, сериализация. БД — async SQLite,
+Redis — fakeredis, брокер — in-memory.
 
 ---
 
@@ -680,13 +754,14 @@ app/
   schemas/        единый response-контракт + DTO
   exceptions/     ServerException + глобальные хендлеры
   models/         ORM-модели (User/Outbox + демо связей: Account/Transaction/Category/Profile)
-  db/             async engine/session (пул), ленивый Unit of Work
-  repositories/   Repository Pattern (ORM + raw SQL, for_update, eager-load options)
+  db/             async engine/session (пул), ленивый Unit of Work, query (фильтры/sort/поиск)
+  repositories/   Repository Pattern (ORM + raw SQL, for_update, eager-load, paginate)
   services/       бизнес-логика (в т.ч. account: deposit/withdraw под FOR UPDATE)
   cache/          абстракция + Redis-реализация
   broker/         абстракция + memory/kafka/rabbitmq
   outbox/         transactional outbox: релей БД -> брокер (at-least-once)
   storage/        абстракция объектного хранилища + S3-реализация (aioboto3)
+  acquiring/      абстракция эквайринга + yookassa (SDK) / memory (заглушка)
   consumers/      подписчики брокера (register_consumers в lifespan)
   scheduler/      планировщик периодических задач (для worker-процесса)
   worker.py       отдельный процесс периодических задач (python -m app.worker)
@@ -714,7 +789,7 @@ tests/            pytest (services, repositories, decorators, storage, outbox, p
 ```bash
 make loadtest                          # smoke (все ручки) + traffic + ratelimit
 make loadtest mode=traffic vus=200 dur=60      # объёмная нагрузка через nginx
-make loadtest url=http://backend:8000 mode=read vus=300 dur=60   # ёмкость мимо nginx
+make loadtest url=http://backend:8080 mode=read vus=300 dur=60   # ёмкость мимо nginx
 make sim-limit cpuset=0-3 mem=2g       # симулировать «сервер на 4 ядрах» (docker update)
 ```
 

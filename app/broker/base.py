@@ -57,3 +57,7 @@ class AbstractBroker(ABC):
           * ОДИНАКОВЫЙ group -> делят нагрузку (competing consumers, балансировка);
           * None -> группа по умолчанию из функции-обработчика (=> fan-out, стабильно).
         """
+
+    async def healthcheck(self) -> bool:
+        """Готов ли брокер (для /health/ready). По умолчанию True; сетевые — переопределяют."""
+        return True

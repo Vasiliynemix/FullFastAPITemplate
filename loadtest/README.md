@@ -27,7 +27,7 @@ make loadtest         # smoke + traffic + ratelimit через nginx
 | `mode=` | `all` | см. таблицу выше |
 | `vus=` | `50` | виртуальных пользователей в `traffic` |
 | `dur=` | `30` | длительность `traffic`, **секунды** |
-| `url=` | `https://nginx` | базовый URL. `http://backend:8000` — мимо nginx |
+| `url=` | `https://nginx` | базовый URL. `http://backend:8080` — мимо nginx |
 | `spread=` | `true` | уникальный `X-Forwarded-For` на VU (обходит app-лимит); `false` — общий |
 | `api_key=` | пусто | `X-API-Key`, если включён `GLOBAL_API_KEY_ENABLED` |
 
@@ -44,7 +44,7 @@ make loadtest mode=traffic vus=200 dur=60
 make loadtest mode=ratelimit
 
 # Настоящая ёмкость бэкенда МИМО nginx (nginx режет на 200 r/s по IP контейнера)
-make loadtest url=http://backend:8000 mode=traffic vus=300 dur=60
+make loadtest url=http://backend:8080 mode=traffic vus=300 dur=60
 ```
 
 ## Как читать результат
@@ -65,4 +65,4 @@ k6 в конце печатает сводку. На что смотреть:
   `spread=true` разводит клиентов по разным бакетам (обход), общий IP в `ratelimit` — ловит 429.
 
 Чтобы померить честную ёмкость бэкенда без nginx-потолка — бей напрямую:
-`make loadtest url=http://backend:8000`.
+`make loadtest url=http://backend:8080`.

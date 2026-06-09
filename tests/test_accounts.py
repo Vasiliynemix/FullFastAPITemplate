@@ -14,6 +14,7 @@ import pytest
 from sqlalchemy.exc import MissingGreenlet
 from sqlalchemy.orm.exc import DetachedInstanceError
 
+from app.core.config import AcquirerName
 from app.db.uow import UnitOfWork
 from app.exceptions.base import ConflictError, NotFoundError
 from app.models.account import Account, Category
@@ -51,17 +52,17 @@ async def test_create_deposit_withdraw(sessionmaker):
     svc = _svc(sessionmaker)
     acc = await svc.create_account(uid, "main")
     assert acc.balance == 0
-    assert (await svc.deposit(acc.id, 500)).balance == 500
-    assert (await svc.withdraw(acc.id, 200)).balance == 300
+    assert (await svc.deposit(acc.id, 500, AcquirerName.MEMORY)).balance == 500
+    assert (await svc.withdraw(acc.id, 200, AcquirerName.MEMORY)).balance == 300
 
 
 async def test_insufficient_funds(sessionmaker):
     uid = await _seed_user(sessionmaker)
     svc = _svc(sessionmaker)
     acc = await svc.create_account(uid, "main")
-    await svc.deposit(acc.id, 100)
+    await svc.deposit(acc.id, 100, AcquirerName.MEMORY)
     with pytest.raises(ConflictError, match="Insufficient"):
-        await svc.withdraw(acc.id, 1000)
+        await svc.withdraw(acc.id, 1000, AcquirerName.MEMORY)
 
 
 async def test_get_account_eager_loads_transactions_and_categories(sessionmaker):
@@ -69,7 +70,7 @@ async def test_get_account_eager_loads_transactions_and_categories(sessionmaker)
     cat = await _seed_category(sessionmaker, "food")
     svc = _svc(sessionmaker)
     acc = await svc.create_account(uid, "main")
-    await svc.deposit(acc.id, 300, category_ids=[cat])  # many-to-many запись
+    await svc.deposit(acc.id, 300, AcquirerName.MEMORY, category_ids=[cat])  # many-to-many запись
 
     detail = await svc.get_account(acc.id)  # eager-load one-to-many + many-to-many
     assert detail.balance == 300
@@ -82,7 +83,7 @@ async def test_user_overview_nested_eager_load(sessionmaker):
     uid = await _seed_user(sessionmaker, with_profile=True)
     svc = _svc(sessionmaker)
     acc = await svc.create_account(uid, "main")
-    await svc.deposit(acc.id, 150)
+    await svc.deposit(acc.id, 150, AcquirerName.MEMORY)
 
     ov = await svc.get_user_overview(uid)  # 1-1 profile + 1-many accounts + вложенные транзакции
     assert ov.profile is not None and ov.profile.bio == "hi"
@@ -93,6 +94,29 @@ async def test_user_overview_nested_eager_load(sessionmaker):
 async def test_missing_account_raises_not_found(sessionmaker):
     with pytest.raises(NotFoundError):
         await _svc(sessionmaker).get_account(uuid.uuid4())
+
+
+async def test_create_and_list_category(sessionmaker):
+    svc = _svc(sessionmaker)
+    cat = await svc.create_category("food")
+    assert cat.name == "food"
+    assert [c.name for c in await svc.list_categories()] == ["food"]
+
+
+async def test_duplicate_category_conflict(sessionmaker):
+    svc = _svc(sessionmaker)
+    await svc.create_category("food")
+    with pytest.raises(ConflictError):
+        await svc.create_category("food")
+
+
+async def test_deposit_unknown_category_raises_404(sessionmaker):
+    uid = await _seed_user(sessionmaker)
+    svc = _svc(sessionmaker)
+    acc = await svc.create_account(uid, "main")
+    # несуществующая категория -> 404, а НЕ молчаливый пропуск
+    with pytest.raises(NotFoundError, match="categories"):
+        await svc.deposit(acc.id, 100, AcquirerName.MEMORY, category_ids=[uuid.uuid4()])
 
 
 async def test_lazy_load_without_eager_fails(sessionmaker):

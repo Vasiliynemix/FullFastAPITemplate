@@ -10,7 +10,7 @@ from __future__ import annotations
 import datetime
 import uuid
 
-from sqlalchemy import Integer, MetaData, func
+from sqlalchemy import DDL, Index, Integer, MetaData, event, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, declared_attr, mapped_column
 
 # Соглашение об именах — детерминированные имена constraint'ов для Alembic
@@ -25,6 +25,38 @@ NAMING_CONVENTION = {
 
 class Base(DeclarativeBase):
     metadata = MetaData(naming_convention=NAMING_CONVENTION)
+
+
+# Авто-создание расширения pg_trgm ПЕРЕД созданием таблиц (create_all). Только Postgres
+# (на SQLite — пропускается). Так умный поиск работает без ручного `CREATE EXTENSION`.
+# В прод-миграциях расширение создаётся хелпером ensure_pg_trgm (см. app/db/ddl.py).
+event.listen(
+    Base.metadata,
+    "before_create",
+    DDL("CREATE EXTENSION IF NOT EXISTS pg_trgm").execute_if(dialect="postgresql"),
+)
+
+
+def trgm_index(name: str, *columns: str) -> Index:
+    """
+    Декларативный GIN-индекс триграмм (pg_trgm) для умного поиска — кладётся в
+    __table_args__ модели. БЕЗ сырого SQL: SQLAlchemy сам рендерит
+    `USING gin (col gin_trgm_ops)` на Postgres. На других диалектах (SQLite-тесты)
+    dialect-опции игнорируются → создаётся обычный индекс (безвредно).
+
+        class User(...):
+            __table_args__ = (trgm_index("ix_users_full_name_trgm", "full_name"),)
+    """
+    return Index(
+        name,
+        *columns,
+        postgresql_using="gin",
+        postgresql_ops=dict.fromkeys(columns, "gin_trgm_ops"),
+    )
+
+
+class TimestampCreatedMixin:
+    created_at: Mapped[datetime.datetime] = mapped_column(server_default=func.now(), nullable=False)
 
 
 class TimestampMixin:

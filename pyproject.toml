@@ -16,43 +16,35 @@ dependencies = [
     "uvloop>=0.21.0; sys_platform != 'win32'",  # ускоренный event loop
     "httptools>=0.6.0",         # быстрый HTTP-парсер для uvicorn
     "httpx>=0.28.0",            # async HTTP-клиент для интеграций с внешними API
-
     # --- Validation / settings ---
     "pydantic>=2.9.0",
     "pydantic-settings>=2.6.0",
     "email-validator>=2.2.0",   # нужен для pydantic EmailStr
-
     # --- Database ---
     "sqlalchemy[asyncio]>=2.0.36",
     "asyncpg>=0.30.0",          # высокопроизводительный async-драйвер PostgreSQL
     "alembic>=1.14.0",
     "greenlet>=3.1.0",
-
     # --- Cache / rate limit / pub-sub ---
     "redis[hiredis]>=5.2.0",    # hiredis — C-парсер ответов Redis
-
     # --- Logging ---
     "structlog>=24.4.0",
     "rich>=13.9.0",            # красивые traceback'и в dev-консоли (structlog)
     "concurrent-log-handler>=0.9.25",  # ротация лог-файла, безопасная для multi-worker + gzip
-
     # --- Auth ---
     "pyjwt>=2.10.0",            # JWT access/refresh токены
     "pwdlib[argon2]>=0.2.1",   # современное хеширование паролей (argon2)
-
     # --- Scheduler ---
     "croniter>=3.0.0",         # cron-выражения для периодических задач воркера
-
     # --- Optional broker clients (abstraction слой) ---
     "aiokafka>=0.12.0",
     "aio-pika>=9.5.0",
-
     # --- Observability ---
     "sentry-sdk[fastapi]>=2.20.0",  # error tracking; включается только при SENTRY_DSN
-
     # --- Object storage ---
     "aioboto3>=13.2.0",         # async S3-клиент (импортируется лениво при STORAGE_TYPE=s3)
     "python-multipart>=0.0.12",  # разбор multipart/form-data для UploadFile
+    "yookassa>=3.10.1",
 ]
 
 [project.optional-dependencies]
