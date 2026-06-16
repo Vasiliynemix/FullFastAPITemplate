@@ -188,8 +188,8 @@ Cookie работает только при `AUTH_JWT_ENABLED=true` и **нес�
 | Метод | Путь | Auth | Описание |
 |------|------|------|----------|
 | POST | `/api/v1/users` | — | создать пользователя. Поддерживает `Idempotency-Key` (опционально) |
-| GET | `/api/v1/users` | — | список: пагинация + фильтры + сортировка + умный поиск (см. ниже) |
-| GET | `/api/v1/users/{id}` | JWT | получить по id |
+| GET | `/api/v1/users` | — | список: пагинация + фильтры + сортировка + умный поиск (см. ниже). Отдаёт `UserReadDetail[]` |
+| GET | `/api/v1/users/{id}` | JWT | получить по id. Отдаёт `UserReadDetail` (со связями) |
 | PATCH | `/api/v1/users/{id}` | — | частичное обновление |
 | PUT | `/api/v1/users/{id}/profile` | — | создать/обновить профиль: `{ "bio"?, "avatar_url"? }` (one-to-one upsert) |
 | DELETE | `/api/v1/users/{id}` | `admin` | удалить (отзывает все сессии юзера) |
@@ -199,11 +199,17 @@ Cookie работает только при `AUTH_JWT_ENABLED=true` и **нес�
 
 **list** — query: `page` (≥1, дефолт 1), `per_page` (1–200, дефолт 50):
 ```json
-{ "status": true, "data": [ /* UserRead[] */ ],
+{ "status": true, "data": [ /* UserReadDetail[] */ ],
   "meta": { "page": 1, "per_page": 50, "total": 2, "pages": 1, "request_id": "..." } }
 ```
 
-`UserRead`: `{ "id", "email", "full_name", "is_active", "role" }`.
+Две формы пользователя (связи грузятся только там, где нужны — см. [ADR 0012](adr/0012-cache-invalidation.md)):
+- `UserRead` (база): `{ "id", "email", "full_name", "is_active", "role", "created_at", "updated_at" }`
+  — ответы `POST`/`PATCH`/`register`/`stream`.
+- `UserReadDetail` = `UserRead` + `{ "accounts": AccountRead[], "profile": { "bio", "avatar_url" } | null }`
+  — ответы `GET /users` и `GET /users/{id}`.
+
+> Мутации счетов/профиля сбрасывают кэш `user:{id}`, поэтому деталь всегда свежая.
 
 ### Accounts (демо связей + блокировки)
 

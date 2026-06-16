@@ -86,6 +86,18 @@ async def test_paginate_sort(sessionmaker):
         assert desc[0][0].full_name == "Петя"
 
 
+async def test_paginate_search_respects_explicit_sort(sessionmaker):
+    # При явном sort он главный даже во время поиска (q='e.com' матчит все email);
+    # релевантность — лишь вторичный ключ. Для таблиц с сортируемыми колонками.
+    await _seed(sessionmaker)
+    async with UnitOfWork(sessionmaker) as uow:
+        asc, total = await uow.users.paginate(q="e.com", sort="full_name")
+        assert total == 3
+        assert [u.full_name for u in asc] == ["Аня", "Вася", "Петя"]
+        desc, _ = await uow.users.paginate(q="e.com", sort="-full_name")
+        assert [u.full_name for u in desc] == ["Петя", "Вася", "Аня"]
+
+
 async def test_paginate_search_and_pagination(sessionmaker):
     await _seed(sessionmaker)
     async with UnitOfWork(sessionmaker) as uow:

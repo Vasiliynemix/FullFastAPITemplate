@@ -12,6 +12,8 @@
 Сортировка: `?sort=created_at` (asc) или `?sort=-created_at` (desc). Дефолт — created_at asc.
 
 Поиск `q`: «умный» (с опечатками) через pg_trgm на Postgres, ILIKE-фолбэк на SQLite.
+При заданном `sort` он остаётся главным ключом порядка, релевантность — вторичным
+(см. paginate в repositories/base.py); без `sort` — порядок чисто по релевантности.
 """
 
 from __future__ import annotations

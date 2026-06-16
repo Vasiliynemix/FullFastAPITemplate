@@ -90,8 +90,15 @@ class BaseRepository(Generic[ModelT]):
         # eager-load — только на выборку элементов (не на COUNT выше)
         if options:
             stmt = stmt.options(*options)
-        # при поиске сортируем по релевантности, иначе — sort/дефолт (created_at asc)
-        stmt = stmt.order_by(order) if order is not None else apply_sort(stmt, self.model, sort)
+        # Порядок: явный sort — главный (для таблиц с сортируемыми колонками он
+        # должен работать и при поиске); при поиске релевантность — вторичный ключ.
+        # Поиск без sort — чистая релевантность. Без поиска — sort/дефолт.
+        if order is not None and sort:
+            stmt = apply_sort(stmt, self.model, sort).order_by(order)
+        elif order is not None:
+            stmt = stmt.order_by(order)
+        else:
+            stmt = apply_sort(stmt, self.model, sort)
         stmt = stmt.limit(per_page).offset((page - 1) * per_page)
         items = (await self.session.execute(stmt)).scalars().all()
         return items, total

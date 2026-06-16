@@ -14,6 +14,7 @@ import pytest
 from sqlalchemy.exc import MissingGreenlet
 from sqlalchemy.orm.exc import DetachedInstanceError
 
+from app.cache.base import AbstractCache
 from app.core.config import AcquirerName
 from app.db.uow import UnitOfWork
 from app.exceptions.base import ConflictError, NotFoundError
@@ -43,8 +44,37 @@ async def _seed_category(sessionmaker, name: str) -> uuid.UUID:
         return c.id
 
 
+class _FakeCache(AbstractCache):
+    """Лёгкий in-memory кэш для тестов: AccountService инвалидирует в нём ключ
+    юзера при изменении его счетов/баланса."""
+
+    def __init__(self) -> None:
+        self._store: dict = {}
+
+    async def get(self, key: str):
+        return self._store.get(key)
+
+    async def set(self, key: str, value, *, ttl=None) -> None:
+        self._store[key] = value
+
+    async def delete(self, *keys: str) -> int:
+        n = 0
+        for key in keys:
+            if self._store.pop(key, None) is not None:
+                n += 1
+        return n
+
+    async def exists(self, key: str) -> bool:
+        return key in self._store
+
+    async def incr(self, key: str, *, amount: int = 1, ttl=None) -> int:
+        value = int(self._store.get(key, 0)) + amount
+        self._store[key] = value
+        return value
+
+
 def _svc(sessionmaker) -> AccountService:
-    return AccountService(uow=UnitOfWork(sessionmaker))
+    return AccountService(uow=UnitOfWork(sessionmaker), cache=_FakeCache())
 
 
 async def test_create_deposit_withdraw(sessionmaker):

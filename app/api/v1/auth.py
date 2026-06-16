@@ -14,6 +14,7 @@ from app.api.deps import AuthServiceDep, CurrentUserDep
 from app.core.config import settings
 from app.exceptions.base import UnauthorizedError
 from app.schemas.auth import (
+    ChangePasswordRequest,
     LoginRequest,
     RefreshRequest,
     RegisterRequest,
@@ -117,3 +118,14 @@ async def sessions(
 async def me(current: CurrentUserDep) -> SuccessResponse[dict]:
     # Принципал собран из клеймов токена (без обращения к БД)
     return success({"id": str(current.id), "role": current.role, "sid": current.sid})
+
+
+@router.post("/change-password", response_model=SuccessResponse[dict])
+async def change_password(
+    data: ChangePasswordRequest,
+    service: AuthServiceDep,
+    current: CurrentUserDep,
+) -> SuccessResponse[dict]:
+    """Сменить пароль текущего пользователя (нужен текущий пароль)."""
+    await service.change_password(str(current.id), data.current_password, data.new_password)
+    return success({"changed": True})

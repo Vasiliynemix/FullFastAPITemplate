@@ -92,8 +92,11 @@ def get_auth_service(
     return AuthService(uow=uow, sessions=sessions)
 
 
-def get_account_service(uow: Annotated[UnitOfWork, Depends(get_uow)]) -> AccountService:
-    return AccountService(uow=uow)
+def get_account_service(
+    uow: Annotated[UnitOfWork, Depends(get_uow)],
+    cache: Annotated[AbstractCache, Depends(get_cache)],
+) -> AccountService:
+    return AccountService(uow=uow, cache=cache)
 
 
 def get_notification_service(

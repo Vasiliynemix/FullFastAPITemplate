@@ -119,6 +119,25 @@ class AuthService:
 
         return self._pair(str(user.id), Role(user.role), sid, new_jti)
 
+    @logged("auth.change_password")
+    async def change_password(self, user_id: str, current_password: str, new_password: str) -> None:
+        """Сменить пароль текущего пользователя (с проверкой текущего)."""
+        # Снимок берём в короткой транзакции, argon2 verify/hash — вне неё
+        # (CPU-bound, не держим соединение пула; см. login/register).
+        async with self.uow:
+            user = await self.uow.users.get(uuid.UUID(user_id))
+            current_hash = user.hashed_password if user is not None else None
+        if current_hash is None or not await verify_password_async(current_password, current_hash):
+            raise UnauthorizedError("Current password is incorrect")
+
+        new_hashed = await hash_password_async(new_password)
+        async with self.uow:
+            user = await self.uow.users.get(uuid.UUID(user_id))
+            if user is None:
+                raise UnauthorizedError("User not found")
+            user.hashed_password = new_hashed
+            await self.uow.commit()
+
     @logged("auth.logout")
     async def logout_current(self, sid: str | None) -> int:
         """Выйти из текущей сессии (по sid из access-токена)."""

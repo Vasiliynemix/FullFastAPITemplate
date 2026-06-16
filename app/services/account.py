@@ -16,17 +16,22 @@ from collections.abc import Sequence
 
 from sqlalchemy.exc import IntegrityError
 
+from app.cache.base import AbstractCache
 from app.core.config import AcquirerName
 from app.db.uow import UnitOfWork
 from app.decorators.logging import logged
 from app.exceptions.base import ConflictError, NotFoundError
 from app.models.account import Account, Category, Transaction
 from app.schemas.account import AccountRead, AccountWithTransactions, CategoryRead, UserOverview
+from app.services.user import user_cache_key
 
 
 class AccountService:
-    def __init__(self, uow: UnitOfWork) -> None:
+    def __init__(self, uow: UnitOfWork, cache: AbstractCache) -> None:
         self.uow = uow
+        # Кэш юзера (cache-aside в UserService) инвалидируем при изменении его
+        # счетов/балансов — иначе GET /users/{id} до TTL отдаёт старые данные.
+        self.cache = cache
 
     @logged("category.create")
     async def create_category(self, name: str) -> CategoryRead:
@@ -51,7 +56,9 @@ class AccountService:
                 raise NotFoundError("User not found")
             acc = await self.uow.accounts.add(Account(user_id=user_id, name=name))
             await self.uow.commit()
-            return AccountRead.model_validate(acc)
+            dto = AccountRead.model_validate(acc)
+        await self.cache.delete(user_cache_key(user_id))  # у юзера новый счёт
+        return dto
 
     @logged("account.get")
     async def get_account(self, account_id: uuid.UUID) -> AccountWithTransactions:
@@ -87,7 +94,10 @@ class AccountService:
                 tx.categories = cats
             await self.uow.transactions.add(tx)
             await self.uow.commit()
-            return AccountRead.model_validate(acc)
+            dto = AccountRead.model_validate(acc)
+            uid = acc.user_id
+        await self.cache.delete(user_cache_key(uid))  # изменился баланс счёта
+        return dto
 
     @logged("account.withdraw")
     async def withdraw(
@@ -105,7 +115,10 @@ class AccountService:
                 Transaction(account_id=acc.id, amount=-amount, kind="withdrawal", acquirer=acquirer)
             )
             await self.uow.commit()
-            return AccountRead.model_validate(acc)
+            dto = AccountRead.model_validate(acc)
+            uid = acc.user_id
+        await self.cache.delete(user_cache_key(uid))  # изменился баланс счёта
+        return dto
 
     @logged("account.overview")
     async def get_user_overview(self, user_id: uuid.UUID) -> UserOverview:

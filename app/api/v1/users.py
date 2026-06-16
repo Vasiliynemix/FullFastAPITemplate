@@ -33,7 +33,7 @@ from app.schemas.response import (
     empty,
     success,
 )
-from app.schemas.user import UserCreate, UserRead, UserUpdate
+from app.schemas.user import UserCreate, UserRead, UserReadDetail, UserUpdate
 from app.security.roles import Role
 
 router = APIRouter()
@@ -62,19 +62,20 @@ async def create_user(
     return await idempotent(idempotency_key, SuccessResponse[UserRead], _produce)
 
 
-@router.get("/{user_id}", response_model=SuccessResponse[UserRead])
+@router.get("/{user_id}", response_model=SuccessResponse[UserReadDetail])
 async def get_user(
     user_id: uuid.UUID,
     service: UserServiceDep,
     _: CurrentUserDep,  # требует валидный access-токен (любая роль)
-) -> SuccessResponse[UserRead]:
+) -> SuccessResponse[UserReadDetail]:
+    # Детальная форма: со счетами (1-many) и профилем (1-1).
     return success(await service.get(user_id))
 
 
-@router.get("", response_model=SuccessResponse[list[UserRead]])
+@router.get("", response_model=SuccessResponse[list[UserReadDetail]])
 async def list_users(
     service: UserServiceDep, params: ListParamsDep
-) -> SuccessResponse[list[UserRead]]:
+) -> SuccessResponse[list[UserReadDetail]]:
     """Список пользователей. Пагинация/фильтры/сортировка/поиск — см. описание API сверху."""
     items, total = await service.list(
         page=params.page,
